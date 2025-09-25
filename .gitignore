@@ -1,0 +1,13 @@
+# build artifacts
+dist/
+harvester
+*.exe
+
+# editor
+.idea/
+.vscode/
+*.swp
+
+# env / local config
+.env
+.env.*
