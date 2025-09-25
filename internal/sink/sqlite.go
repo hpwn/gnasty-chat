@@ -76,6 +76,43 @@ func (s *SQLiteSink) Count() (int64, error) {
 	return n, nil
 }
 
+// ListRecent returns up to limit messages ordered by timestamp descending.
+func (s *SQLiteSink) ListRecent(limit int) ([]core.ChatMessage, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(`
+SELECT id, ts, username, platform, text, emotes_json, raw_json, badges_json, colour
+FROM messages
+ORDER BY ts DESC
+LIMIT ?;
+`, limit)
+	if err != nil {
+		return nil, errors.Wrap(err, "list recent")
+	}
+	defer rows.Close()
+
+	var out []core.ChatMessage
+	for rows.Next() {
+		var (
+			msg core.ChatMessage
+			ts  string
+		)
+		if err := rows.Scan(&msg.ID, &ts, &msg.Username, &msg.Platform, &msg.Text, &msg.EmotesJSON, &msg.RawJSON, &msg.BadgesJSON, &msg.Colour); err != nil {
+			return nil, errors.Wrap(err, "scan recent")
+		}
+		if t, err := time.Parse(time.RFC3339Nano, ts); err == nil {
+			msg.Ts = t
+		}
+		out = append(out, msg)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, errors.Wrap(err, "iterate recent")
+	}
+	return out, nil
+}
+
 func (s *SQLiteSink) String() string {
 	return fmt.Sprintf("SQLiteSink{%p}", s.db)
 }
