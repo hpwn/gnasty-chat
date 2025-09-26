@@ -96,14 +96,23 @@ func (c *Client) runOnce(ctx context.Context) error {
 
 	rw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
 
+	// write one IRC line and flush
+	send := func(s string) error {
+		_, err := rw.WriteString(s + "\r\n")
+		if err != nil {
+			return err
+		}
+		return rw.Flush()
+	}
+	
 	// ensure the per-connection closer goroutine exits when this runOnce returns
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
 		select {
-			case <-ctx.Done():
+		case <-ctx.Done():
 			_ = conn.Close() // unblock reader
-			case <-done:
+		case <-done:
 			// this connection ended normally; nothing to do
 		}
 	}()
