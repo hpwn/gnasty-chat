@@ -478,26 +478,49 @@ func digMap(m map[string]any, keys ...string) map[string]any {
 }
 
 func findInitialContinuation(data map[string]any) string {
-	queue := []any{data}
+	type queueItem struct {
+		value      any
+		inLiveChat bool
+	}
+
+	queue := []queueItem{{value: data}}
 
 	for len(queue) > 0 {
-		var item any
+		var item queueItem
 		item, queue = queue[0], queue[1:]
-		switch v := item.(type) {
+		switch v := item.value.(type) {
 		case map[string]any:
-			if cont := continuationFromNode(v); cont != "" {
-				return cont
+			currentLiveChat := item.inLiveChat || mapHasLiveChatKey(v)
+			if currentLiveChat {
+				if cont := continuationFromNode(v); cont != "" {
+					log.Printf("ytlive: using live chat continuation %q", cont)
+					return cont
+				}
 			}
-			for _, child := range v {
-				queue = append(queue, child)
+			for key, child := range v {
+				nextLiveChat := currentLiveChat || isLiveChatKey(key)
+				queue = append(queue, queueItem{value: child, inLiveChat: nextLiveChat})
 			}
 		case []any:
 			for _, child := range v {
-				queue = append(queue, child)
+				queue = append(queue, queueItem{value: child, inLiveChat: item.inLiveChat})
 			}
 		}
 	}
 	return ""
+}
+
+func isLiveChatKey(key string) bool {
+	return strings.Contains(strings.ToLower(key), "livechat")
+}
+
+func mapHasLiveChatKey(m map[string]any) bool {
+	for key := range m {
+		if isLiveChatKey(key) {
+			return true
+		}
+	}
+	return false
 }
 
 func continuationFromNode(node map[string]any) string {
