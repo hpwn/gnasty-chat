@@ -94,18 +94,19 @@ func (c *Client) runOnce(ctx context.Context) error {
 	}
 	defer conn.Close()
 
-	go func() {
-		<-ctx.Done()
-		_ = conn.Close()
-	}()
-
 	rw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
-	send := func(cmd string) error {
-		if _, err := rw.WriteString(cmd + "\r\n"); err != nil {
-			return err
+
+	// ensure the per-connection closer goroutine exits when this runOnce returns
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+			case <-ctx.Done():
+			_ = conn.Close() // unblock reader
+			case <-done:
+			// this connection ended normally; nothing to do
 		}
-		return rw.Flush()
-	}
+	}()
 
 	if err := send("PASS " + c.cfg.Token); err != nil {
 		return fmt.Errorf("send PASS: %w", err)
