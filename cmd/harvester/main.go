@@ -14,6 +14,7 @@ import (
 	"github.com/you/gnasty-chat/internal/core"
 	"github.com/you/gnasty-chat/internal/sink"
 	"github.com/you/gnasty-chat/internal/twitchirc"
+	"github.com/you/gnasty-chat/internal/ytlive"
 )
 
 func main() {
@@ -25,6 +26,7 @@ func main() {
 		twNick    string
 		twToken   string
 		twTLS     bool
+		ytURL     string
 	)
 
 	flag.StringVar(&dbPath, "sqlite", "chat.db", "Path to SQLite database file")
@@ -32,6 +34,7 @@ func main() {
 	flag.StringVar(&twNick, "twitch-nick", "", "Twitch nickname to login as")
 	flag.StringVar(&twToken, "twitch-token", "", "Twitch OAuth token (format: oauth:xxxxx)")
 	flag.BoolVar(&twTLS, "twitch-tls", true, "Use TLS (port 6697) for Twitch IRC connection")
+	flag.StringVar(&ytURL, "youtube-url", "", "YouTube live/watch URL")
 	flag.Parse()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -84,6 +87,23 @@ func main() {
 			}
 		}()
 		log.Printf("harvester: twitch receiver started for #%s", twChannel)
+	}
+
+	if ytURL != "" {
+		handler := func(msg core.ChatMessage) {
+			if err := sinkDB.Write(msg); err != nil {
+				log.Printf("harvester: write youtube message: %v", err)
+			}
+		}
+		client := ytlive.New(ytlive.Config{LiveURL: ytURL}, handler)
+		started++
+		go func() {
+			if err := client.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("harvester: youtube client exited: %v", err)
+				cancel()
+			}
+		}()
+		log.Printf("harvester: youtube receiver started for %s", ytURL)
 	}
 
 	if started == 0 {
