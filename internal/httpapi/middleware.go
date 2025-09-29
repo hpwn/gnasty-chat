@@ -11,6 +11,10 @@ import (
 	"golang.org/x/time/rate"
 )
 
+/***************
+ * Access log recorder
+ ***************/
+
 type responseRecorder struct {
 	http.ResponseWriter
 	status int
@@ -44,6 +48,10 @@ func (r *responseRecorder) Status() int {
 
 func (r *responseRecorder) Bytes() int64 { return r.bytes }
 
+/***************
+ * Gzip wrapper
+ ***************/
+
 type gzipResponseWriter struct {
 	http.ResponseWriter
 	writer *gzip.Writer
@@ -54,7 +62,7 @@ func (g *gzipResponseWriter) Write(b []byte) (int, error) {
 }
 
 func (g *gzipResponseWriter) Flush() {
-	g.writer.Flush()
+	_ = g.writer.Flush()
 	if flusher, ok := g.ResponseWriter.(http.Flusher); ok {
 		flusher.Flush()
 	}
@@ -64,37 +72,58 @@ func (g *gzipResponseWriter) Close() error {
 	return g.writer.Close()
 }
 
-func maybeGzip(w http.ResponseWriter, r *http.Request) (*gzipResponseWriter, bool) {
-    if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
-        return nil, false
-    }
-    // Never gzip upgraded (WS) or similar
-    if r.Header.Get("Upgrade") != "" {
-        return nil, false
-    }
-
-    // If we're sitting on top of a responseRecorder, unwrap to the
-    // underlying real writer so we don't create a recursion cycle.
-    base := w
-    if rr, ok := w.(*responseRecorder); ok && rr != nil && rr.ResponseWriter != nil {
-        base = rr.ResponseWriter
-    }
-
-    gz := gzip.NewWriter(base)
-    grw := &gzipResponseWriter{ResponseWriter: base, writer: gz}
-
-    // Ensure headers reflect compression and vary correctly.
-    w.Header().Set("Content-Encoding", "gzip")
-    w.Header().Add("Vary", "Accept-Encoding")
-
-    // If a recorder is present, make it delegate to the gzip writer,
-    // keeping the recorder as the outer layer for status/byte counting.
-    if rr, ok := w.(*responseRecorder); ok {
-        rr.ResponseWriter = grw
-    }
-
-    return grw, true
+// baseWriter peels off our recorder/wrappers and returns the underlying writer.
+// Use this in handlers that require the concrete interfaces of the base
+// ResponseWriter (e.g., WebSocket upgrades need http.Hijacker on HTTP/1.1).
+func baseWriter(w http.ResponseWriter) http.ResponseWriter {
+	if rr, ok := w.(*responseRecorder); ok && rr != nil && rr.ResponseWriter != nil {
+		return rr.ResponseWriter
+	}
+	return w
 }
+
+// maybeGzip enables gzip when appropriate and returns the gzip writer and true.
+// If gzip is not applied, it returns (nil, false).
+func maybeGzip(w http.ResponseWriter, r *http.Request) (*gzipResponseWriter, bool) {
+	ae := r.Header.Get("Accept-Encoding")
+	if !strings.Contains(ae, "gzip") {
+		return nil, false
+	}
+	// Never gzip upgraded (WebSocket, etc.)
+	if r.Header.Get("Upgrade") != "" {
+		return nil, false
+	}
+	// Do not gzip Server-Sent Events; it can interfere with proxies/buffering.
+	if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
+		return nil, false
+	}
+
+	// If we're sitting on top of a responseRecorder, unwrap to the underlying
+	// real writer so we don't create recursion or double-wrapping.
+	base := w
+	if rr, ok := w.(*responseRecorder); ok && rr != nil && rr.ResponseWriter != nil {
+		base = rr.ResponseWriter
+	}
+
+	gz := gzip.NewWriter(base)
+	grw := &gzipResponseWriter{ResponseWriter: base, writer: gz}
+
+	// Reflect compression and vary correctly on the outer writer headers.
+	w.Header().Set("Content-Encoding", "gzip")
+	w.Header().Add("Vary", "Accept-Encoding")
+
+	// If a recorder is present, redirect its writes through the gzip writer,
+	// keeping the recorder as the outer layer for status/byte counting.
+	if rr, ok := w.(*responseRecorder); ok {
+		rr.ResponseWriter = grw
+	}
+
+	return grw, true
+}
+
+/***************
+ * Per-IP rate limiting
+ ***************/
 
 type clientLimiter struct {
 	limiter  *rate.Limiter
@@ -137,10 +166,10 @@ func (l *ipRateLimiter) Allow(ip string) bool {
 	entry.lastSeen = now
 	allowed := entry.limiter.Allow()
 
+	// Opportunistic cleanup if the map grows large.
 	if len(l.entries) > 1024 {
 		l.cleanup(now)
 	}
-
 	return allowed
 }
 
@@ -157,9 +186,8 @@ func remoteIP(r *http.Request) string {
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		parts := strings.Split(xff, ",")
 		for _, part := range parts {
-			part = strings.TrimSpace(part)
-			if part != "" {
-				return part
+			if p := strings.TrimSpace(part); p != "" {
+				return p
 			}
 		}
 	}
@@ -169,6 +197,10 @@ func remoteIP(r *http.Request) string {
 	}
 	return host
 }
+
+/***************
+ * CORS policy
+ ***************/
 
 type corsPolicy struct {
 	allowAll bool
@@ -181,16 +213,16 @@ func newCORSPolicy(origins []string) *corsPolicy {
 	}
 	policy := &corsPolicy{origins: make(map[string]struct{})}
 	for _, origin := range origins {
-		origin = strings.TrimSpace(origin)
-		if origin == "" {
+		o := strings.TrimSpace(origin)
+		if o == "" {
 			continue
 		}
-		if origin == "*" {
+		if o == "*" {
 			policy.allowAll = true
 			policy.origins = nil
 			break
 		}
-		policy.origins[origin] = struct{}{}
+		policy.origins[o] = struct{}{}
 	}
 	return policy
 }
@@ -209,6 +241,7 @@ func (c *corsPolicy) isAllowed(origin string) bool {
 	return ok
 }
 
+// handlePreflight processes CORS OPTIONS requests. It returns (handled, status).
 func (c *corsPolicy) handlePreflight(w http.ResponseWriter, r *http.Request) (bool, int) {
 	if c == nil {
 		return false, 0
@@ -235,6 +268,8 @@ func (c *corsPolicy) handlePreflight(w http.ResponseWriter, r *http.Request) (bo
 	return true, http.StatusNoContent
 }
 
+// applyHeaders adds CORS response headers for non-preflight requests.
+// Returns false if the Origin is present but not allowed.
 func (c *corsPolicy) applyHeaders(w http.ResponseWriter, r *http.Request) bool {
 	if c == nil {
 		return true
