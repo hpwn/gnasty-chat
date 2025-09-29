@@ -7,6 +7,7 @@ toolchain go1.24.3
 require (
 	github.com/pkg/errors v0.9.1
 	modernc.org/sqlite v1.39.0
+	nhooyr.io/websocket v1.8.17
 )
 
 require (
