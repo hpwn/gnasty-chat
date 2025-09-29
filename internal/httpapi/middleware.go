@@ -65,17 +65,35 @@ func (g *gzipResponseWriter) Close() error {
 }
 
 func maybeGzip(w http.ResponseWriter, r *http.Request) (*gzipResponseWriter, bool) {
-	if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
-		return nil, false
-	}
-	if r.Header.Get("Upgrade") != "" {
-		return nil, false
-	}
-	gz := gzip.NewWriter(w)
-	grw := &gzipResponseWriter{ResponseWriter: w, writer: gz}
-	w.Header().Set("Content-Encoding", "gzip")
-	w.Header().Add("Vary", "Accept-Encoding")
-	return grw, true
+    if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+        return nil, false
+    }
+    // Never gzip upgraded (WS) or similar
+    if r.Header.Get("Upgrade") != "" {
+        return nil, false
+    }
+
+    // If we're sitting on top of a responseRecorder, unwrap to the
+    // underlying real writer so we don't create a recursion cycle.
+    base := w
+    if rr, ok := w.(*responseRecorder); ok && rr != nil && rr.ResponseWriter != nil {
+        base = rr.ResponseWriter
+    }
+
+    gz := gzip.NewWriter(base)
+    grw := &gzipResponseWriter{ResponseWriter: base, writer: gz}
+
+    // Ensure headers reflect compression and vary correctly.
+    w.Header().Set("Content-Encoding", "gzip")
+    w.Header().Add("Vary", "Accept-Encoding")
+
+    // If a recorder is present, make it delegate to the gzip writer,
+    // keeping the recorder as the outer layer for status/byte counting.
+    if rr, ok := w.(*responseRecorder); ok {
+        rr.ResponseWriter = grw
+    }
+
+    return grw, true
 }
 
 type clientLimiter struct {
