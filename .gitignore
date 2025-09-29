@@ -11,3 +11,8 @@ dist/
 # env / local config
 .env
 .env.*
+
+elora.db
+*.db
+*.db-shm
+*.db-wal
