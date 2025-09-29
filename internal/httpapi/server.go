@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/you/gnasty-chat/internal/core"
+	"nhooyr.io/websocket"
+	"nhooyr.io/websocket/wsjson"
 )
 
 type Store interface {
@@ -43,6 +45,7 @@ func New(store Store, opts Options) *Server {
 	mux.HandleFunc("/count", srv.handleCount)
 	mux.HandleFunc("/messages", srv.handleMessages)
 	mux.HandleFunc("/stream", srv.handleStream)
+	mux.HandleFunc("/ws", srv.handleWS)
 
 	srv.httpServer = &http.Server{
 		Addr:              opts.Addr,
@@ -143,6 +146,70 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 			}
 			fmt.Fprintf(w, "event: message\ndata: %s\n\n", data)
 			flusher.Flush()
+		}
+	}
+}
+
+func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		http.Error(w, "server shutting down", http.StatusServiceUnavailable)
+		return
+	}
+	s.mu.Unlock()
+
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+	if err != nil {
+		log.Printf("websocket accept error: %v", err)
+		return
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	ctx := conn.CloseRead(r.Context())
+
+	clientCh := make(chan core.ChatMessage, 256)
+
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		_ = conn.Close(websocket.StatusPolicyViolation, "server shutting down")
+		return
+	}
+	s.clients[clientCh] = struct{}{}
+	s.mu.Unlock()
+
+	defer func() {
+		s.mu.Lock()
+		delete(s.clients, clientCh)
+		s.mu.Unlock()
+	}()
+
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			pingCtx, cancel := context.WithTimeout(ctx, time.Second)
+			if err := conn.Ping(pingCtx); err != nil {
+				cancel()
+				return
+			}
+			cancel()
+		case msg, ok := <-clientCh:
+			if !ok {
+				_ = conn.Close(websocket.StatusNormalClosure, "server shutting down")
+				return
+			}
+			writeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			if err := wsjson.Write(writeCtx, conn, msg); err != nil {
+				cancel()
+				return
+			}
+			cancel()
 		}
 	}
 }
