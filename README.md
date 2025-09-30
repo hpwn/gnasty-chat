@@ -132,3 +132,22 @@ The same filters apply to `/messages`, `/count`, `/stream`, and `/ws`.
 
 These counters are useful while hammer-testing with `hey`, validating filters with `curl`,
 and monitoring production deployments.
+
+## Docker quick start
+
+```bash
+cp .env.example .env   # then edit TWITCH_TOKEN
+docker compose up --build
+curl -s localhost:8765/healthz
+```
+
+## SQLite tuning (optional)
+
+Set `GN_SQLITE_TUNING=1` to apply WAL mode, adjust synchronous and busy timeout, and
+increase mmap/temp_store settings on startup. The defaults remain unchanged when the
+variable is unset. Compose users can flip this via `.env`.
+
+## Integrating with elora-chat
+
+When running under Compose, other services can connect to gnasty via
+`http://gnasty:8765` on the shared network.

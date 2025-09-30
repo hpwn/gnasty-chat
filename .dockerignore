@@ -1,0 +1,10 @@
+data/
+**/*.db
+**/*.sqlite
+**/*.log
+**/node_modules
+.git
+.github
+**/*.test
+**/*.out
+harvester

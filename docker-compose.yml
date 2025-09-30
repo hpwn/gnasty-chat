@@ -1,0 +1,32 @@
+services:
+  gnasty:
+    build: .
+    command: 
+      - /app/harvester
+      - -sqlite
+      - /data/elora.db
+      - -http-addr
+      - :8765
+      - -twitch-channel
+      - rifftrax
+      - -twitch-nick
+      - hp_az
+      - -twitch-token
+      - ${TWITCH_TOKEN}
+      - -twitch-tls
+      - "true"
+      # -youtube-url
+      # https://www.youtube.com/watch?v=jfKfPfyJRdk
+    environment:
+      - TWITCH_TOKEN=${TWITCH_TOKEN}
+      - GN_SQLITE_TUNING=${GN_SQLITE_TUNING-0}
+    ports:
+      - "8765:8765"
+    volumes:
+      - ./data:/data
+    networks:
+      - default
+
+networks:
+  default:
+    name: gnasty-chat
