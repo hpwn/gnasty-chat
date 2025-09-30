@@ -5,10 +5,10 @@ import (
 	"flag"
 	"log"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/you/gnasty-chat/internal/core"
+	"github.com/you/gnasty-chat/internal/httpapi"
 	"github.com/you/gnasty-chat/internal/sink"
 )
 
@@ -85,7 +85,12 @@ func main() {
 	})
 
 	mux.HandleFunc("GET /count", func(w http.ResponseWriter, r *http.Request) {
-		n, err := s.Count()
+		filters, err := httpapi.FiltersFromRequest(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		n, err := s.CountMessages(r.Context(), filters)
 		if err != nil {
 			http.Error(w, "count failed: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -95,13 +100,12 @@ func main() {
 	})
 
 	mux.HandleFunc("GET /messages", func(w http.ResponseWriter, r *http.Request) {
-		limit := 50
-		if q := r.URL.Query().Get("limit"); q != "" {
-			if v, err := strconv.Atoi(q); err == nil && v > 0 && v <= 1000 {
-				limit = v
-			}
+		filters, err := httpapi.FiltersFromRequest(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
 		}
-		list, err := s.ListRecent(limit)
+		list, err := s.ListMessages(r.Context(), filters)
 		if err != nil {
 			http.Error(w, "list failed: "+err.Error(), http.StatusInternalServerError)
 			return

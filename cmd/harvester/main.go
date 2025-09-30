@@ -18,17 +18,29 @@ import (
 	"github.com/you/gnasty-chat/internal/ytlive"
 )
 
+var (
+	version = "dev"
+	gitSHA  = "unknown"
+	builtAt = ""
+)
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
 	var (
-		dbPath    string
-		twChannel string
-		twNick    string
-		twToken   string
-		twTLS     bool
-		ytURL     string
-		httpAddr  string
+		dbPath          string
+		twChannel       string
+		twNick          string
+		twToken         string
+		twTLS           bool
+		ytURL           string
+		httpAddr        string
+		httpCorsOrigins string
+		httpRateRPS     int
+		httpRateBurst   int
+		httpMetrics     bool
+		httpAccessLog   bool
+		httpPprof       bool
 	)
 
 	flag.StringVar(&dbPath, "sqlite", "chat.db", "Path to SQLite database file")
@@ -38,6 +50,12 @@ func main() {
 	flag.BoolVar(&twTLS, "twitch-tls", true, "Use TLS (port 6697) for Twitch IRC connection")
 	flag.StringVar(&ytURL, "youtube-url", "", "YouTube live/watch URL")
 	flag.StringVar(&httpAddr, "http-addr", "", "HTTP status/stream address (e.g., :8765)")
+	flag.StringVar(&httpCorsOrigins, "http-cors-origins", "", "Comma-separated list of allowed CORS origins")
+	flag.IntVar(&httpRateRPS, "http-rate-rps", 20, "Maximum HTTP requests per second per client")
+	flag.IntVar(&httpRateBurst, "http-rate-burst", 40, "Burst size for HTTP rate limiter")
+	flag.BoolVar(&httpMetrics, "http-metrics", true, "Expose Prometheus metrics endpoint")
+	flag.BoolVar(&httpAccessLog, "http-access-log", true, "Log HTTP access records")
+	flag.BoolVar(&httpPprof, "http-pprof", false, "Expose pprof handlers under /debug/pprof")
 	flag.Parse()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -74,8 +92,34 @@ func main() {
 		api    *httpapi.Server
 	)
 
+	var corsOrigins []string
+	if strings.TrimSpace(httpCorsOrigins) != "" {
+		for _, origin := range strings.Split(httpCorsOrigins, ",") {
+			origin = strings.TrimSpace(origin)
+			if origin != "" {
+				corsOrigins = append(corsOrigins, origin)
+			}
+		}
+	}
+
+	build := httpapi.BuildInfo{Version: version, Revision: gitSHA}
+	if builtAt != "" {
+		if t, err := time.Parse(time.RFC3339, builtAt); err == nil {
+			build.BuiltAt = t
+		}
+	}
+
 	if httpAddr != "" {
-		api = httpapi.New(sinkDB, httpapi.Options{Addr: httpAddr})
+		api = httpapi.New(sinkDB, httpapi.Options{
+			Addr:            httpAddr,
+			CORSOrigins:     corsOrigins,
+			RateLimitRPS:    httpRateRPS,
+			RateLimitBurst:  httpRateBurst,
+			EnableMetrics:   httpMetrics,
+			EnableAccessLog: httpAccessLog,
+			EnablePprof:     httpPprof,
+			Build:           build,
+		})
 		go func() {
 			if err := api.Start(); err != nil {
 				log.Fatalf("harvester: http api: %v", err)
@@ -94,6 +138,9 @@ func main() {
 		handler := func(msg core.ChatMessage) {
 			if err := writer.Write(msg); err != nil {
 				log.Printf("harvester: write twitch message: %v", err)
+				if api != nil {
+					api.ReportDBWriteError()
+				}
 			}
 		}
 		client := twitchirc.New(twitchirc.Config{
@@ -116,6 +163,9 @@ func main() {
 		handler := func(msg core.ChatMessage) {
 			if err := writer.Write(msg); err != nil {
 				log.Printf("harvester: write youtube message: %v", err)
+				if api != nil {
+					api.ReportDBWriteError()
+				}
 			}
 		}
 		client := ytlive.New(ytlive.Config{LiveURL: ytURL}, handler)
