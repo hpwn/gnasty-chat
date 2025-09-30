@@ -87,8 +87,14 @@ func maybeGzip(w http.ResponseWriter, r *http.Request) (*gzipResponseWriter, boo
 	if r.Header.Get("Upgrade") != "" {
 		return nil, false
 	}
-	gz := gzip.NewWriter(w)
-	grw := &gzipResponseWriter{ResponseWriter: w, writer: gz}
+	// gzip must wrap the *underlying* writer, not the recorder itself.
+	// Otherwise rr.Header() <-> grw.Header() will recurse forever.
+	under := w
+	if rr0, ok := w.(*responseRecorder); ok && rr0.ResponseWriter != nil {
+		under = rr0.ResponseWriter
+	}
+	gz := gzip.NewWriter(under)
+	grw := &gzipResponseWriter{ResponseWriter: under, writer: gz}
 	w.Header().Set("Content-Encoding", "gzip")
 	w.Header().Add("Vary", "Accept-Encoding")
 	return grw, true
