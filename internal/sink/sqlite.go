@@ -47,6 +47,7 @@ func OpenSQLite(path string) (*SQLiteSink, error) {
 		_ = db.Close()
 		return nil, errors.Wrap(err, "set WAL")
 	}
+	ApplySQLitePragmas(context.Background(), db)
 	return &SQLiteSink{db: db}, nil
 }
 
