@@ -1,12 +1,14 @@
 services:
   gnasty:
     build: .
-    command: 
-      - /app/harvester
+    entrypoint: ["/app/harvester"]
+    command:
       - -sqlite
       - /data/elora.db
       - -http-addr
       - :8765
+      - -youtube-url
+      - ${YOUTUBE_URL}
       - -twitch-channel
       - rifftrax
       - -twitch-nick
@@ -14,18 +16,13 @@ services:
       - -twitch-token
       - ${TWITCH_TOKEN}
       - -twitch-tls
-      - "true"
-      # -youtube-url
-      # https://www.youtube.com/watch?v=jfKfPfyJRdk
+      - ${TWITCH_TLS}
     environment:
-      - TWITCH_TOKEN=${TWITCH_TOKEN}
-      - GN_SQLITE_TUNING=${GN_SQLITE_TUNING-0}
-    ports:
-      - "8765:8765"
-    volumes:
-      - ./data:/data
-    networks:
-      - default
+      GN_SQLITE_TUNING: "${GN_SQLITE_TUNING-0}"
+      TWITCH_TOKEN: "${TWITCH_TOKEN}"
+    ports: ["8765:8765"]
+    volumes: ["./data:/data"]
+    networks: [default]
 
 networks:
   default:
