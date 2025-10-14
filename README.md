@@ -26,14 +26,21 @@ go build -tags 'sqlite_omit_load_extension' ./cmd/harvester
 The harvester ingests Twitch IRC and/or YouTube Live chat and optionally serves the
 built-in HTTP API. A typical invocation:
 
+Twitch authentication accepts either a static token or a file that rotates in place:
+
+- Static flag: `-twitch-token oauth:<access_token>` (the `oauth:` prefix is optional).
+- Token file: `-twitch-token-file /run/secrets/twitch_token` (the file may contain the
+  raw token or the `oauth:` form; the harvester polls every ~10s and reconnects when it
+  changes).
+
 ```bash
-./harvester \ 
-  -sqlite ./elora.db \ 
-  -twitch-channel rifftrax -twitch-nick hp_az -twitch-token 'oauth:…' -twitch-tls=true \ 
-  -youtube-url 'https://www.youtube.com/watch?v=jfKfPfyJRdk' \ 
-  -http-addr :8765 \ 
-  -http-cors-origins 'http://localhost:5173' \ 
-  -http-rate-rps 20 -http-rate-burst 40 \ 
+./harvester \
+  -sqlite ./elora.db \
+  -twitch-channel rifftrax -twitch-nick hp_az -twitch-token-file /run/secrets/twitch_token -twitch-tls=true \
+  -youtube-url 'https://www.youtube.com/watch?v=jfKfPfyJRdk' \
+  -http-addr :8765 \
+  -http-cors-origins 'http://localhost:5173' \
+  -http-rate-rps 20 -http-rate-burst 40 \
   -http-metrics=true -http-access-log=true
 ```
 
