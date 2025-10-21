@@ -14,6 +14,7 @@ import (
 	"github.com/you/gnasty-chat/internal/core"
 	"github.com/you/gnasty-chat/internal/httpapi"
 	"github.com/you/gnasty-chat/internal/sink"
+	"github.com/you/gnasty-chat/internal/twitch"
 	"github.com/you/gnasty-chat/internal/twitchirc"
 	"github.com/you/gnasty-chat/internal/ytlive"
 )
@@ -32,6 +33,7 @@ func main() {
 		twChannel       string
 		twNick          string
 		twToken         string
+		twTokenFile     string
 		twTLS           bool
 		ytURL           string
 		httpAddr        string
@@ -47,6 +49,7 @@ func main() {
 	flag.StringVar(&twChannel, "twitch-channel", "", "Twitch channel to join (without #)")
 	flag.StringVar(&twNick, "twitch-nick", "", "Twitch nickname to login as")
 	flag.StringVar(&twToken, "twitch-token", "", "Twitch OAuth token (format: oauth:xxxxx)")
+	flag.StringVar(&twTokenFile, "twitch-token-file", "", "Path to file containing the Twitch OAuth token")
 	flag.BoolVar(&twTLS, "twitch-tls", true, "Use TLS (port 6697) for Twitch IRC connection")
 	flag.StringVar(&ytURL, "youtube-url", "", "YouTube live/watch URL")
 	flag.StringVar(&httpAddr, "http-addr", "", "HTTP status/stream address (e.g., :8765)")
@@ -131,10 +134,11 @@ func main() {
 
 	started := 0
 
-	if twChannel != "" && twToken != "" {
+	if strings.TrimSpace(twChannel) != "" {
 		if strings.TrimSpace(twNick) == "" {
 			log.Fatal("harvester: twitch-nick is required when twitch-channel/token provided")
 		}
+
 		handler := func(msg core.ChatMessage) {
 			if err := writer.Write(msg); err != nil {
 				log.Printf("harvester: write twitch message: %v", err)
@@ -143,20 +147,45 @@ func main() {
 				}
 			}
 		}
-		client := twitchirc.New(twitchirc.Config{
-			Channel: twChannel,
-			Nick:    twNick,
-			Token:   twToken,
-			UseTLS:  twTLS,
-		}, handler)
-		started++
-		go func() {
-			if err := client.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				log.Printf("harvester: twitch client exited: %v", err)
-				cancel()
+
+		var (
+			token  string
+			loader *twitch.FileTokenLoader
+		)
+
+		if strings.TrimSpace(twTokenFile) != "" {
+			loader = twitch.NewFileTokenLoader(twTokenFile)
+			if loaded, _, err := loader.Load(); err == nil {
+				if loaded != "" {
+					token = loaded
+				}
+			} else if !errors.Is(err, twitch.ErrEmptyToken) {
+				log.Printf("harvester: twitch token file: %v", err)
 			}
-		}()
-		log.Printf("harvester: twitch receiver started for #%s", twChannel)
+		}
+
+		if token == "" {
+			token = twitch.NormalizeToken(twToken)
+		}
+
+		if token == "" {
+			log.Printf("harvester: twitch token not provided; skipping twitch receiver")
+		} else {
+			if loader != nil {
+				loader.SetCached(token)
+			}
+
+			cfg := twitchirc.Config{
+				Channel: twChannel,
+				Nick:    twNick,
+				Token:   token,
+				UseTLS:  twTLS,
+			}
+
+			started++
+			go runTwitchWithReload(ctx, cancel, cfg, handler, loader)
+			log.Printf("harvester: twitch receiver started for #%s", twChannel)
+		}
 	}
 
 	if ytURL != "" {
@@ -196,4 +225,70 @@ func main() {
 	// allow receiver goroutines to finish cleanly
 	time.Sleep(100 * time.Millisecond)
 	log.Printf("harvester: shutdown complete")
+}
+
+func runTwitchWithReload(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	baseCfg twitchirc.Config,
+	handler func(core.ChatMessage),
+	loader *twitch.FileTokenLoader,
+) {
+	startClient := func(cfg twitchirc.Config) (context.CancelFunc, <-chan struct{}) {
+		runCtx, runCancel := context.WithCancel(ctx)
+		done := make(chan struct{})
+		client := twitchirc.New(cfg, handler)
+		go func() {
+			defer close(done)
+			if err := client.Run(runCtx); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("harvester: twitch client exited: %v", err)
+				cancel()
+			}
+		}()
+		return runCancel, done
+	}
+
+	cfg := baseCfg
+	cancelCurrent, doneCurrent := startClient(cfg)
+
+	if loader == nil {
+		<-ctx.Done()
+		cancelCurrent()
+		<-doneCurrent
+		return
+	}
+
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			cancelCurrent()
+			<-doneCurrent
+			return
+		case <-ticker.C:
+			token, changed, err := loader.Load()
+			if err != nil {
+				if !errors.Is(err, twitch.ErrEmptyToken) {
+					log.Printf("harvester: twitch token file: %v", err)
+				}
+				continue
+			}
+			if !changed {
+				continue
+			}
+			if token == "" {
+				continue
+			}
+
+			log.Printf("twitch: token reload detected; reconnecting")
+
+			cancelCurrent()
+			<-doneCurrent
+
+			cfg.Token = token
+			cancelCurrent, doneCurrent = startClient(cfg)
+		}
+	}
 }
