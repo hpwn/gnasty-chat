@@ -227,14 +227,19 @@ ON CONFLICT(platform, id) DO NOTHING;`
 		platformMsgID = id
 	}
 
-	args := []any{id, tsStr, msg.Username, msg.Platform, msg.Text,
-		nz(msg.EmotesJSON, "[]"), nz(msg.RawJSON, ""), nz(msg.BadgesJSON, "[]"), nz(msg.Colour, "")}
 	query := fallback
 	if s.upsertSQL != "" {
 		query = s.upsertSQL
 	}
-	if s.usePlatformMsgID {
-		args = append(args, platformMsgID)
+
+	usePlatformMsgID := s.usePlatformMsgID && s.upsertSQL != ""
+	var args []any
+	if usePlatformMsgID {
+		args = []any{id, platformMsgID, tsStr, msg.Username, msg.Platform, msg.Text,
+			nz(msg.EmotesJSON, "[]"), nz(msg.RawJSON, ""), nz(msg.BadgesJSON, "[]"), nz(msg.Colour, "")}
+	} else {
+		args = []any{id, tsStr, msg.Username, msg.Platform, msg.Text,
+			nz(msg.EmotesJSON, "[]"), nz(msg.RawJSON, ""), nz(msg.BadgesJSON, "[]"), nz(msg.Colour, "")}
 	}
 
 	_, err := s.db.Exec(query, args...)
