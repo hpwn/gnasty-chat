@@ -2,7 +2,9 @@ package sink
 
 import (
 	"context"
+	"crypto/sha1"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -57,8 +59,20 @@ func (s *SQLiteSink) Write(msg core.ChatMessage) error {
 	const q = `INSERT INTO messages (id, ts, username, platform, text, emotes_json, raw_json, badges_json, colour)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(platform, id) DO NOTHING;`
-	ts := msg.Ts.UTC().Format(time.RFC3339Nano)
-	_, err := s.db.Exec(q, msg.ID, ts, msg.Username, msg.Platform, msg.Text,
+	ts := msg.Ts
+	if ts.IsZero() {
+		ts = time.Now().UTC()
+	}
+	tsStr := ts.UTC().Format(time.RFC3339Nano)
+
+	id := msg.ID
+	if id == "" {
+		data := fmt.Sprintf("%s|%s|%s|%s", msg.Platform, tsStr, msg.Username, msg.Text)
+		sum := sha1.Sum([]byte(data))
+		id = "fallback_" + hex.EncodeToString(sum[:8])
+	}
+
+	_, err := s.db.Exec(q, id, tsStr, msg.Username, msg.Platform, msg.Text,
 		nz(msg.EmotesJSON, "[]"), nz(msg.RawJSON, ""), nz(msg.BadgesJSON, "[]"), nz(msg.Colour, ""))
 	return errors.Wrap(err, "insert message")
 }
