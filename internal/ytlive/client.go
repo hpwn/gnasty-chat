@@ -349,16 +349,20 @@ func gatherActions(payload map[string]any) []map[string]any {
 
 func buildMessage(renderer map[string]any) (core.ChatMessage, bool) {
 	msg := core.ChatMessage{
-		ID:       stringField(renderer, "id"),
-		Username: textField(renderer, "authorName"),
-		Platform: "YouTube",
-		Text:     textField(renderer, "message"),
+		ID:            stringField(renderer, "id"),
+		PlatformMsgID: stringField(renderer, "id"),
+		Username:      textField(renderer, "authorName"),
+		Platform:      "YouTube",
+		Text:          textField(renderer, "message"),
 	}
 	if msg.Text == "" {
 		return core.ChatMessage{}, false
 	}
 	if msg.ID == "" {
 		msg.ID = fmt.Sprintf("yt-%d", time.Now().UnixNano())
+	}
+	if msg.PlatformMsgID == "" {
+		msg.PlatformMsgID = msg.ID
 	}
 	msg.Ts = timestampField(renderer, "timestampUsec")
 	return msg, true

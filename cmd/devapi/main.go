@@ -13,15 +13,16 @@ import (
 )
 
 type emitReq struct {
-	ID         string    `json:"id,omitempty"`
-	Platform   string    `json:"platform"`
-	Username   string    `json:"username"`
-	Text       string    `json:"text"`
-	Ts         time.Time `json:"ts,omitempty"`
-	EmotesJSON string    `json:"emotes_json,omitempty"`
-	RawJSON    string    `json:"raw_json,omitempty"`
-	BadgesJSON string    `json:"badges_json,omitempty"`
-	Colour     string    `json:"colour,omitempty"`
+	ID            string    `json:"id,omitempty"`
+	Platform      string    `json:"platform"`
+	PlatformMsgID string    `json:"platform_msg_id,omitempty"`
+	Username      string    `json:"username"`
+	Text          string    `json:"text"`
+	Ts            time.Time `json:"ts,omitempty"`
+	EmotesJSON    string    `json:"emotes_json,omitempty"`
+	RawJSON       string    `json:"raw_json,omitempty"`
+	BadgesJSON    string    `json:"badges_json,omitempty"`
+	Colour        string    `json:"colour,omitempty"`
 }
 
 func main() {
@@ -65,16 +66,20 @@ func main() {
 			req.ID = req.Platform + "-" + req.Ts.Format("20060102T150405.000000000Z07:00")
 		}
 
+		if req.PlatformMsgID == "" {
+			req.PlatformMsgID = req.ID
+		}
 		msg := core.ChatMessage{
-			ID:         req.ID,
-			Ts:         req.Ts,
-			Username:   req.Username,
-			Platform:   req.Platform,
-			Text:       req.Text,
-			EmotesJSON: req.EmotesJSON,
-			RawJSON:    req.RawJSON,
-			BadgesJSON: req.BadgesJSON,
-			Colour:     req.Colour,
+			ID:            req.ID,
+			PlatformMsgID: req.PlatformMsgID,
+			Ts:            req.Ts,
+			Username:      req.Username,
+			Platform:      req.Platform,
+			Text:          req.Text,
+			EmotesJSON:    req.EmotesJSON,
+			RawJSON:       req.RawJSON,
+			BadgesJSON:    req.BadgesJSON,
+			Colour:        req.Colour,
 		}
 		if err := s.Write(msg); err != nil {
 			http.Error(w, "insert failed: "+err.Error(), http.StatusInternalServerError)
