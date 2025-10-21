@@ -104,7 +104,7 @@ func (c *Client) runOnce(ctx context.Context) error {
 		}
 		return rw.Flush()
 	}
-	
+
 	// ensure the per-connection closer goroutine exits when this runOnce returns
 	done := make(chan struct{})
 	defer close(done)
@@ -276,15 +276,16 @@ func parsePrivmsg(line, channel string) (core.ChatMessage, bool) {
 	rawJSON, _ := json.Marshal(rawMap)
 
 	return core.ChatMessage{
-		ID:         id,
-		Ts:         ts,
-		Username:   user,
-		Platform:   "Twitch",
-		Text:       text,
-		EmotesJSON: encodeList(emotes),
-		RawJSON:    string(rawJSON),
-		BadgesJSON: encodeList(badges),
-		Colour:     tags["color"],
+		ID:            id,
+		PlatformMsgID: id,
+		Ts:            ts,
+		Username:      user,
+		Platform:      "Twitch",
+		Text:          text,
+		EmotesJSON:    encodeList(emotes),
+		RawJSON:       string(rawJSON),
+		BadgesJSON:    encodeList(badges),
+		Colour:        tags["color"],
 	}, true
 }
 
