@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,6 +45,10 @@ func OpenSQLite(path string) (*SQLiteSink, error) {
 		_ = db.Close()
 		return nil, errors.Wrap(err, "apply schema")
 	}
+	if err := migrateLegacyMessagesTable(context.Background(), db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if err := ensureIndices(context.Background(), db); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -73,6 +78,197 @@ func ensureIndices(ctx context.Context, db *sql.DB) error {
 }
 
 func (s *SQLiteSink) Close() error { return s.db.Close() }
+
+func migrateLegacyMessagesTable(ctx context.Context, db *sql.DB) error {
+	columns, err := inspectMessagesColumns(ctx, db)
+	if err != nil {
+		return err
+	}
+	if len(columns) == 0 {
+		return nil
+	}
+
+	idType, okID := columns["id"]
+	tsType, okTS := columns["ts"]
+	if !okID || !okTS {
+		return nil
+	}
+	if strings.EqualFold(idType, "INTEGER") && strings.EqualFold(tsType, "INTEGER") {
+		return nil
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return errors.Wrap(err, "begin legacy messages migration")
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	if _, err = tx.ExecContext(ctx, `CREATE TABLE messages_new (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  platform TEXT NOT NULL,
+  platform_msg_id TEXT,
+  ts INTEGER NOT NULL,
+  username TEXT NOT NULL,
+  text TEXT NOT NULL,
+  emotes_json TEXT NOT NULL DEFAULT '[]',
+  raw_json TEXT NOT NULL DEFAULT '',
+  badges_json TEXT NOT NULL DEFAULT '[]',
+  colour TEXT NOT NULL DEFAULT ''
+);`); err != nil {
+		return errors.Wrap(err, "create migrated messages table")
+	}
+
+	rows, qErr := tx.QueryContext(ctx, `SELECT id, platform, platform_msg_id, ts, username, text, emotes_json, raw_json, badges_json, colour FROM messages`)
+	if qErr != nil {
+		err = errors.Wrap(qErr, "select legacy messages")
+		return err
+	}
+	defer rows.Close()
+
+	insertStmt, prepErr := tx.PrepareContext(ctx, `INSERT INTO messages_new (
+        platform, platform_msg_id, ts, username, text, emotes_json, raw_json, badges_json, colour
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);`)
+	if prepErr != nil {
+		err = errors.Wrap(prepErr, "prepare migrated insert")
+		return err
+	}
+	defer insertStmt.Close()
+
+	for rows.Next() {
+		var (
+			legacyID      sql.NullString
+			platform      string
+			platformMsgID sql.NullString
+			legacyTS      sql.NullString
+			username      string
+			text          string
+			emotesJSON    string
+			rawJSON       string
+			badgesJSON    string
+			colour        string
+		)
+		if scanErr := rows.Scan(&legacyID, &platform, &platformMsgID, &legacyTS, &username, &text, &emotesJSON, &rawJSON, &badgesJSON, &colour); scanErr != nil {
+			err = errors.Wrap(scanErr, "scan legacy message")
+			return err
+		}
+
+		tsMillis, convErr := legacyTimestampToMillis(legacyTS.String)
+		if convErr != nil {
+			err = errors.Wrap(convErr, "convert legacy timestamp")
+			return err
+		}
+
+		pmid := strings.TrimSpace(platformMsgID.String)
+		if pmid == "" {
+			pmid = strings.TrimSpace(legacyID.String)
+		}
+		var platformMsgArg any
+		if pmid != "" {
+			platformMsgArg = pmid
+		} else {
+			platformMsgArg = nil
+		}
+
+		if _, execErr := insertStmt.ExecContext(ctx,
+			strings.TrimSpace(platform),
+			platformMsgArg,
+			tsMillis,
+			strings.TrimSpace(username),
+			text,
+			emotesJSON,
+			rawJSON,
+			badgesJSON,
+			colour,
+		); execErr != nil {
+			err = errors.Wrap(execErr, "insert migrated message")
+			return err
+		}
+	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		err = errors.Wrap(rowsErr, "iterate legacy messages")
+		return err
+	}
+
+	if _, err = tx.ExecContext(ctx, `DROP TABLE messages;`); err != nil {
+		err = errors.Wrap(err, "drop legacy messages table")
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `ALTER TABLE messages_new RENAME TO messages;`); err != nil {
+		err = errors.Wrap(err, "rename migrated messages table")
+		return err
+	}
+
+	if err = tx.Commit(); err != nil {
+		return errors.Wrap(err, "commit legacy messages migration")
+	}
+
+	return nil
+}
+
+func inspectMessagesColumns(ctx context.Context, db *sql.DB) (map[string]string, error) {
+	rows, err := db.QueryContext(ctx, `PRAGMA table_info(messages);`)
+	if err != nil {
+		return nil, errors.Wrap(err, "inspect messages table info")
+	}
+	defer rows.Close()
+
+	columns := make(map[string]string)
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			colType    string
+			notNull    int
+			defaultVal sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &defaultVal, &pk); err != nil {
+			return nil, errors.Wrap(err, "scan messages table info")
+		}
+		columns[strings.ToLower(strings.TrimSpace(name))] = strings.TrimSpace(colType)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errors.Wrap(err, "iterate messages table info")
+	}
+	return columns, nil
+}
+
+func legacyTimestampToMillis(raw string) (int64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	if strings.ContainsAny(raw, "-:T") {
+		layouts := []string{time.RFC3339Nano, time.RFC3339}
+		for _, layout := range layouts {
+			if parsed, err := time.Parse(layout, raw); err == nil {
+				return parsed.UTC().UnixMilli(), nil
+			}
+		}
+	}
+	if numeric, err := strconv.ParseInt(raw, 10, 64); err == nil {
+		const (
+			nanosThreshold  = 1_000_000_000_000_000_000
+			microsThreshold = 1_000_000_000_000_000
+			millisThreshold = 1_000_000_000_000
+		)
+		switch {
+		case numeric >= nanosThreshold:
+			return numeric / 1_000_000, nil
+		case numeric >= microsThreshold:
+			return numeric / 1_000, nil
+		case numeric >= millisThreshold:
+			return numeric, nil
+		default:
+			return numeric * 1_000, nil
+		}
+	}
+	return 0, fmt.Errorf("unrecognised legacy timestamp %q", raw)
+}
 
 func (s *SQLiteSink) Write(msg core.ChatMessage) error {
 	tsMS := msg.TimestampMS
