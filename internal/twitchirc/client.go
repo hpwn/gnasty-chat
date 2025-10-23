@@ -272,7 +272,7 @@ func (c *Client) runOnce(ctx context.Context) error {
 			continue
 		}
 
-		if strings.Contains(line, " RECONNECT") {
+		if fields := strings.Fields(line); len(fields) >= 2 && fields[0] == ":tmi.twitch.tv" && fields[1] == "RECONNECT" {
 			return fmt.Errorf("server requested reconnect")
 		}
 
