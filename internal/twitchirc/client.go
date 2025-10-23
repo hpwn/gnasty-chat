@@ -210,9 +210,11 @@ func (c *Client) runOnce(ctx context.Context) error {
 
 	reader := rw.Reader
 	var (
-		total    int
-		window   int
-		nextTick = time.Now().Add(10 * time.Second)
+		total        int
+		window       int
+		nextTick     = time.Now().Add(10 * time.Second)
+		readDeadline = 2 * time.Minute
+		nextPing     = time.Now().Add(4 * time.Minute)
 	)
 
 	for {
@@ -220,7 +222,7 @@ func (c *Client) runOnce(ctx context.Context) error {
 			return ctx.Err()
 		}
 
-		if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		if err := conn.SetReadDeadline(time.Now().Add(readDeadline)); err != nil {
 			return fmt.Errorf("set deadline: %w", err)
 		}
 
@@ -228,6 +230,12 @@ func (c *Client) runOnce(ctx context.Context) error {
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
 				now := time.Now()
+				if now.After(nextPing) || now.Equal(nextPing) {
+					if err := send("PING :keepalive"); err != nil {
+						return fmt.Errorf("send PING: %w", err)
+					}
+					nextPing = now.Add(4 * time.Minute)
+				}
 				if now.After(nextTick) || now.Equal(nextTick) {
 					log.Printf("twitchirc: recv %d msgs (total %d)", window, total)
 					window = 0
@@ -244,6 +252,7 @@ func (c *Client) runOnce(ctx context.Context) error {
 			window = 0
 			nextTick = now.Add(10 * time.Second)
 		}
+		nextPing = now.Add(4 * time.Minute)
 
 		line = strings.TrimRight(line, "\r\n")
 		if line == "" {
@@ -251,14 +260,20 @@ func (c *Client) runOnce(ctx context.Context) error {
 		}
 
 		if authFailure(line) {
+			log.Printf("twitchirc: authentication failed per server NOTICE")
 			return errAuthFailed
 		}
 
 		if strings.HasPrefix(line, "PING ") {
-			if err := send("PONG :tmi.twitch.tv"); err != nil {
+			if err := send("PONG " + strings.TrimPrefix(line, "PING ")); err != nil {
 				return fmt.Errorf("send PONG: %w", err)
 			}
+			nextPing = time.Now().Add(4 * time.Minute)
 			continue
+		}
+
+		if strings.Contains(line, " RECONNECT") {
+			return fmt.Errorf("server requested reconnect")
 		}
 
 		if msg, ok := parsePrivmsg(line, c.cfg.Channel); ok {
