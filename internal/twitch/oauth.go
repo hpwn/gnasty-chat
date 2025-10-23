@@ -17,6 +17,8 @@ import (
 
 var tokenEndpoint = "https://id.twitch.tv/oauth2/token"
 
+const defaultRefreshTimeout = 15 * time.Second
+
 type RefreshManager struct {
 	ClientID     string
 	ClientSecret string
@@ -38,6 +40,17 @@ type refreshResponse struct {
 }
 
 func (m *RefreshManager) Refresh(ctx context.Context) (string, time.Duration, error) {
+	reqCtx := ctx
+	cancel := func() {}
+	if ctx != nil {
+		if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+			reqCtx, cancel = context.WithTimeout(ctx, defaultRefreshTimeout)
+		}
+	} else {
+		reqCtx, cancel = context.WithTimeout(context.Background(), defaultRefreshTimeout)
+	}
+	defer cancel()
+
 	clientID := strings.TrimSpace(m.ClientID)
 	clientSecret := strings.TrimSpace(m.ClientSecret)
 	refreshToken := strings.TrimSpace(m.RefreshToken)
@@ -56,7 +69,7 @@ func (m *RefreshManager) Refresh(ctx context.Context) (string, time.Duration, er
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenEndpoint, strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, tokenEndpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", 0, fmt.Errorf("twitch: create refresh request: %w", err)
 	}
