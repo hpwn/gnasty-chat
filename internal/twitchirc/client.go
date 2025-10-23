@@ -17,10 +17,13 @@ import (
 )
 
 type Config struct {
-	Channel string
-	Nick    string
-	Token   string
-	UseTLS  bool
+	Channel       string
+	Nick          string
+	Token         string
+	UseTLS        bool
+	TokenProvider func() string
+	RefreshNow    func(context.Context) (string, error)
+	Addr          string
 }
 
 type Handler func(core.ChatMessage)
@@ -30,16 +33,19 @@ type Client struct {
 	handle Handler
 }
 
+var errAuthFailed = errors.New("twitchirc: authentication failed")
+
 func New(cfg Config, h Handler) *Client {
 	return &Client{cfg: cfg, handle: h}
 }
 
 func (c *Client) Run(ctx context.Context) error {
-	if strings.TrimSpace(c.cfg.Channel) == "" || strings.TrimSpace(c.cfg.Nick) == "" || strings.TrimSpace(c.cfg.Token) == "" {
-		return errors.New("twitchirc: channel, nick, and token are required")
+	if strings.TrimSpace(c.cfg.Channel) == "" || strings.TrimSpace(c.cfg.Nick) == "" {
+		return errors.New("twitchirc: channel and nick are required")
 	}
 
 	backoff := time.Second
+	refreshBackoff := time.Second
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -49,6 +55,63 @@ func (c *Client) Run(ctx context.Context) error {
 			if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return ctx.Err()
 			}
+
+			if errors.Is(err, errAuthFailed) {
+				if c.cfg.RefreshNow == nil {
+					log.Printf("twitchirc: authentication failed; retrying in %s", backoff)
+					timer := time.NewTimer(backoff)
+					select {
+					case <-ctx.Done():
+						timer.Stop()
+						return ctx.Err()
+					case <-timer.C:
+					}
+					if backoff < 60*time.Second {
+						backoff *= 2
+						if backoff > 60*time.Second {
+							backoff = 60 * time.Second
+						}
+					}
+					continue
+				}
+
+				log.Printf("twitchirc: authentication failed; refreshing token")
+				for {
+					if ctx.Err() != nil {
+						return ctx.Err()
+					}
+
+					_, refreshErr := c.cfg.RefreshNow(ctx)
+					if refreshErr == nil {
+						refreshBackoff = time.Second
+						backoff = time.Second
+						break
+					}
+
+					if ctx.Err() != nil {
+						return ctx.Err()
+					}
+
+					log.Printf("twitchirc: refresh failed: %v; retrying in %s", refreshErr, refreshBackoff)
+					timer := time.NewTimer(refreshBackoff)
+					select {
+					case <-ctx.Done():
+						timer.Stop()
+						return ctx.Err()
+					case <-timer.C:
+					}
+
+					if refreshBackoff < time.Minute {
+						refreshBackoff *= 2
+						if refreshBackoff > time.Minute {
+							refreshBackoff = time.Minute
+						}
+					}
+				}
+
+				continue
+			}
+
 			log.Printf("twitchirc: disconnected: %v; reconnecting in %s", err, backoff)
 
 			timer := time.NewTimer(backoff)
@@ -69,14 +132,28 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 
 		backoff = time.Second
+		refreshBackoff = time.Second
 	}
 }
 
 func (c *Client) runOnce(ctx context.Context) error {
+	token := strings.TrimSpace(c.cfg.Token)
+	if c.cfg.TokenProvider != nil {
+		if provided := strings.TrimSpace(c.cfg.TokenProvider()); provided != "" {
+			token = provided
+		}
+	}
+	if token == "" {
+		return errors.New("twitchirc: token is required")
+	}
+
 	host := "irc.chat.twitch.tv"
 	addr := host + ":6667"
 	if c.cfg.UseTLS {
 		addr = host + ":6697"
+	}
+	if strings.TrimSpace(c.cfg.Addr) != "" {
+		addr = strings.TrimSpace(c.cfg.Addr)
 	}
 
 	log.Printf("twitchirc: connecting to %s (tls=%v)", addr, c.cfg.UseTLS)
@@ -117,7 +194,7 @@ func (c *Client) runOnce(ctx context.Context) error {
 		}
 	}()
 
-	if err := send("PASS " + c.cfg.Token); err != nil {
+	if err := send("PASS " + token); err != nil {
 		return fmt.Errorf("send PASS: %w", err)
 	}
 	if err := send("NICK " + c.cfg.Nick); err != nil {
@@ -171,6 +248,10 @@ func (c *Client) runOnce(ctx context.Context) error {
 		line = strings.TrimRight(line, "\r\n")
 		if line == "" {
 			continue
+		}
+
+		if authFailure(line) {
+			return errAuthFailed
 		}
 
 		if strings.HasPrefix(line, "PING ") {
@@ -287,6 +368,20 @@ func parsePrivmsg(line, channel string) (core.ChatMessage, bool) {
 		BadgesJSON:    encodeList(badges),
 		Colour:        tags["color"],
 	}, true
+}
+
+func authFailure(line string) bool {
+	lower := strings.ToLower(line)
+	if strings.Contains(lower, "login authentication failed") {
+		return true
+	}
+	if strings.Contains(lower, "improperly formatted auth") {
+		return true
+	}
+	if strings.Contains(lower, "authentication failed") {
+		return true
+	}
+	return false
 }
 
 func extractUser(prefix string) string {
