@@ -33,6 +33,32 @@ Twitch authentication accepts either a static token or a file that rotates in pl
   raw token or the `oauth:` form; the harvester polls every ~10s and reconnects when it
   changes).
 
+### Automatic Twitch token refresh
+
+Provide a Twitch refresh token plus app credentials to let gnasty-chat fetch new IRC
+tokens automatically. On startup the harvester exchanges the refresh token for a fresh
+`oauth:<access_token>`, writes it to the token file (mode `0600`), and reconnects the IRC
+session whenever a new token lands.
+
+| Flag | Environment variable | Required with refresh | Description |
+| --- | --- | --- | --- |
+| `-twitch-client-id` | `TWITCH_CLIENT_ID` | ✅ | Twitch application client ID. |
+| `-twitch-client-secret` | `TWITCH_CLIENT_SECRET` | ✅ | Twitch application client secret. |
+| `-twitch-refresh-token` | `TWITCH_REFRESH_TOKEN` | ✅* | Refresh token. Use `-twitch-refresh-token-file` to load from disk instead. |
+| `-twitch-refresh-token-file` | `TWITCH_REFRESH_TOKEN_FILE` | Optional | Path to a file containing the refresh token. Takes precedence over the inline flag/env. |
+| `-twitch-token-file` | `TWITCH_TOKEN_FILE` | ✅ | Location for the IRC token (`oauth:<access_token>`) written after every refresh. |
+
+"Required" means the values must be supplied via flag or env when enabling refresh. You may
+still combine the refresh flow with manual rotations - gnasty will watch the token file
+and reconnect when it changes.
+
+Security notes:
+
+- Secrets are never logged. Refresh failures only report generic error messages.
+- The token file is rewritten with permissions `0600` and fsync'd on every refresh.
+- On authentication failures Twitch IRC forces an immediate refresh with bounded
+  backoff; no manual restart is required.
+
 ```bash
 ./harvester \
   -sqlite ./elora.db \
