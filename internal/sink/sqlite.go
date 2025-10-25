@@ -37,7 +37,14 @@ type SQLiteSink struct {
 const defaultListLimit = 100
 
 func OpenSQLite(path string) (*SQLiteSink, error) {
-	db, err := sql.Open("sqlite", path)
+	dsn := path
+	if strings.Contains(path, "?") {
+		dsn = path + "&_busy_timeout=5000&_journal_mode=wal"
+	} else {
+		dsn = path + "?_busy_timeout=5000&_journal_mode=wal"
+	}
+
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, errors.Wrap(err, "open sqlite")
 	}
@@ -306,17 +313,20 @@ func (s *SQLiteSink) Write(msg core.ChatMessage) error {
         platform, platform_msg_id, ts, username, text, emotes_json, raw_json, badges_json, colour
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) %s;`, conflict)
 
-	_, err := s.db.Exec(query,
-		platform,
-		platformMsgArg,
-		tsMS,
-		username,
-		text,
-		emotesJSON,
-		rawJSON,
-		badgesJSON,
-		msg.Colour,
-	)
+	err := withRetry(func() error {
+		_, execErr := s.db.Exec(query,
+			platform,
+			platformMsgArg,
+			tsMS,
+			username,
+			text,
+			emotesJSON,
+			rawJSON,
+			badgesJSON,
+			msg.Colour,
+		)
+		return execErr
+	})
 	return errors.Wrap(err, "insert message")
 }
 
@@ -336,6 +346,21 @@ func jsonText(encoded string, value any, empty string) string {
 
 func (s *SQLiteSink) Ping() error {
 	return s.db.Ping()
+}
+
+func withRetry(fn func() error) error {
+	const max = 5
+	for i := 0; i < max; i++ {
+		if err := fn(); err != nil {
+			if strings.Contains(err.Error(), "SQLITE_BUSY") {
+				time.Sleep(time.Duration(100*(i+1)) * time.Millisecond)
+				continue
+			}
+			return err
+		}
+		return nil
+	}
+	return fmt.Errorf("exhausted retries (SQLITE_BUSY)")
 }
 
 func (s *SQLiteSink) String() string {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
@@ -13,9 +14,12 @@ import (
 	"time"
 
 	"github.com/you/gnasty-chat/internal/core"
+	"github.com/you/gnasty-chat/internal/harvester"
+	httpadmin "github.com/you/gnasty-chat/internal/http"
 	"github.com/you/gnasty-chat/internal/httpapi"
 	"github.com/you/gnasty-chat/internal/sink"
 	"github.com/you/gnasty-chat/internal/twitch"
+	"github.com/you/gnasty-chat/internal/twitchauth"
 	"github.com/you/gnasty-chat/internal/twitchirc"
 	"github.com/you/gnasty-chat/internal/ytlive"
 )
@@ -88,6 +92,20 @@ func main() {
 		}
 	}
 
+	twClientID = strings.TrimSpace(twClientID)
+	twClientSecret = strings.TrimSpace(twClientSecret)
+	twRefreshToken = strings.TrimSpace(twRefreshToken)
+	twRefreshFile = strings.TrimSpace(twRefreshFile)
+	twTokenFile = strings.TrimSpace(twTokenFile)
+
+	tokenFiles := twitchauth.TokenFiles{
+		AccessPath:   twTokenFile,
+		RefreshPath:  twRefreshFile,
+		ClientID:     twClientID,
+		ClientSecret: twClientSecret,
+	}
+	har := harvester.New(tokenFiles, nil)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -150,6 +168,10 @@ func main() {
 			EnablePprof:     httpPprof,
 			Build:           build,
 		})
+		if har != nil {
+			admin := httpadmin.New(har)
+			admin.Register(api.Mux())
+		}
 		go func() {
 			if err := api.Start(); err != nil {
 				log.Fatalf("harvester: http api: %v", err)
@@ -161,8 +183,10 @@ func main() {
 
 	started := 0
 
-	if strings.TrimSpace(twChannel) != "" {
-		if strings.TrimSpace(twNick) == "" {
+	channel := strings.TrimSpace(twChannel)
+	if channel != "" {
+		nick := strings.TrimSpace(twNick)
+		if nick == "" {
 			log.Fatal("harvester: twitch-nick is required when twitch-channel/token provided")
 		}
 
@@ -175,10 +199,10 @@ func main() {
 			}
 		}
 
-		tokenFilePath := strings.TrimSpace(twTokenFile)
+		tokenFilePath := twTokenFile
 
-		if strings.TrimSpace(twRefreshFile) != "" {
-			data, err := os.ReadFile(strings.TrimSpace(twRefreshFile))
+		if twRefreshFile != "" {
+			data, err := os.ReadFile(twRefreshFile)
 			if err != nil {
 				log.Printf("harvester: twitch refresh token file: %v", err)
 			} else {
@@ -187,11 +211,11 @@ func main() {
 		}
 
 		var (
-			token        string
-			loader       *twitch.FileTokenLoader
-			refreshMgr   *twitch.RefreshManager
-			tokenUpdates chan tokenUpdate
+			token      string
+			loader     *twitch.FileTokenLoader
+			refreshMgr *twitch.RefreshManager
 		)
+		tokenUpdates := make(chan tokenUpdate, 4)
 
 		if tokenFilePath != "" {
 			loader = twitch.NewFileTokenLoader(tokenFilePath)
@@ -204,15 +228,15 @@ func main() {
 			}
 		}
 
-		if strings.TrimSpace(twClientID) != "" && strings.TrimSpace(twClientSecret) != "" && strings.TrimSpace(twRefreshToken) != "" {
+		if twClientID != "" && twClientSecret != "" && twRefreshToken != "" {
 			if tokenFilePath == "" {
 				log.Fatal("harvester: twitch-token-file is required when refresh inputs provided")
 			}
 
 			refreshMgr = &twitch.RefreshManager{
-				ClientID:     strings.TrimSpace(twClientID),
-				ClientSecret: strings.TrimSpace(twClientSecret),
-				RefreshToken: strings.TrimSpace(twRefreshToken),
+				ClientID:     twClientID,
+				ClientSecret: twClientSecret,
+				RefreshToken: twRefreshToken,
 				TokenFile:    tokenFilePath,
 			}
 
@@ -224,7 +248,6 @@ func main() {
 			if token == "" {
 				log.Fatal("harvester: received empty twitch token after refresh")
 			}
-			tokenUpdates = make(chan tokenUpdate, 4)
 		}
 
 		if token == "" {
@@ -244,8 +267,8 @@ func main() {
 			state := newTokenState(token)
 
 			cfg := twitchirc.Config{
-				Channel:       twChannel,
-				Nick:          twNick,
+				Channel:       channel,
+				Nick:          nick,
 				Token:         token,
 				UseTLS:        twTLS,
 				TokenProvider: state.Current,
@@ -282,9 +305,22 @@ func main() {
 				})
 			}
 
+			reloader := &twitchReloader{updates: tokenUpdates, nick: nick}
+			har.SetTwitchConn(reloader)
+
+			if tokenFilePath != "" {
+				watchPaths := []string{tokenFilePath}
+				if twRefreshFile != "" {
+					watchPaths = append(watchPaths, twRefreshFile)
+				}
+				if err := har.WatchTokenFiles(watchPaths...); err != nil {
+					slog.Error("harvester: watch token files", "err", err)
+				}
+			}
+
 			started++
 			go runTwitchWithReload(ctx, cancel, cfg, handler, loader, state, tokenUpdates)
-			log.Printf("harvester: twitch receiver started for #%s", twChannel)
+			log.Printf("harvester: twitch receiver started for #%s", channel)
 		}
 	}
 
@@ -405,6 +441,33 @@ func runTwitchWithReload(
 	}
 }
 
+type twitchReloader struct {
+	updates chan tokenUpdate
+	nick    string
+}
+
+func (r *twitchReloader) Reconnect(access string) error {
+	if r == nil {
+		return errors.New("twitch reloader unavailable")
+	}
+	if r.updates == nil {
+		return errors.New("twitch reload channel unavailable")
+	}
+	token := twitch.NormalizeToken(access)
+	if token == "" {
+		return errors.New("twitch: empty token")
+	}
+	sendTokenUpdate(r.updates, tokenUpdate{Token: token, Force: true, Reason: "manual"})
+	return nil
+}
+
+func (r *twitchReloader) JoinedNick() string {
+	if r == nil {
+		return ""
+	}
+	return r.nick
+}
+
 type tokenUpdate struct {
 	Token  string
 	Force  bool
@@ -499,6 +562,8 @@ func applyTokenUpdate(
 		log.Printf("twitch: token reload detected; reconnecting")
 	case "refresh":
 		log.Printf("twitch: refreshed token; reconnecting")
+	case "manual":
+		log.Printf("twitch: manual token reload requested; reconnecting")
 	default:
 		log.Printf("twitch: token update detected; reconnecting")
 	}
