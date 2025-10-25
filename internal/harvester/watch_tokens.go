@@ -41,7 +41,12 @@ func (h *Harvester) WatchTokenFiles(paths ...string) error {
 				if !ok {
 					return
 				}
-				if ev.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename) != 0 {
+				if ev.Op&(fsnotify.Remove|fsnotify.Rename) != 0 {
+					if err := w.Add(ev.Name); err != nil {
+						slog.Error("watch re-add", "path", ev.Name, "err", err)
+					}
+				}
+				if ev.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Remove|fsnotify.Rename) != 0 {
 					if !debounce.Stop() {
 						select {
 						case <-debounce.C:
