@@ -43,6 +43,8 @@ type Server struct {
 	store      Store
 	opts       Options
 
+	mux *http.ServeMux
+
 	mu      sync.Mutex
 	clients map[*streamClient]struct{}
 	closed  bool
@@ -64,12 +66,12 @@ func New(store Store, opts Options) *Server {
 		srv.metrics = newMetrics()
 	}
 
-	mux := http.NewServeMux()
-	srv.registerRoutes(mux)
+	srv.mux = http.NewServeMux()
+	srv.registerRoutes()
 
 	srv.httpServer = &http.Server{
 		Addr:              opts.Addr,
-		Handler:           mux,
+		Handler:           srv.mux,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -79,23 +81,27 @@ func New(store Store, opts Options) *Server {
 	return srv
 }
 
-func (s *Server) registerRoutes(mux *http.ServeMux) {
-	mux.Handle("/healthz", s.wrap("healthz", s.handleHealthz, handlerOptions{}))
-	mux.Handle("/count", s.wrap("count", s.handleCount, handlerOptions{gzip: true}))
-	mux.Handle("/messages", s.wrap("messages", s.handleMessages, handlerOptions{gzip: true}))
-	mux.Handle("/stream", s.wrap("stream", s.handleStream, handlerOptions{}))
-	mux.Handle("/ws", s.wrap("ws", s.handleWS, handlerOptions{}))
-	mux.Handle("/info", s.wrap("info", s.handleInfo, handlerOptions{}))
+func (s *Server) registerRoutes() {
+	s.mux.Handle("/healthz", s.wrap("healthz", s.handleHealthz, handlerOptions{}))
+	s.mux.Handle("/count", s.wrap("count", s.handleCount, handlerOptions{gzip: true}))
+	s.mux.Handle("/messages", s.wrap("messages", s.handleMessages, handlerOptions{gzip: true}))
+	s.mux.Handle("/stream", s.wrap("stream", s.handleStream, handlerOptions{}))
+	s.mux.Handle("/ws", s.wrap("ws", s.handleWS, handlerOptions{}))
+	s.mux.Handle("/info", s.wrap("info", s.handleInfo, handlerOptions{}))
 	if s.metrics != nil {
-		mux.Handle("/metrics", s.wrap("metrics", s.handleMetrics, handlerOptions{}))
+		s.mux.Handle("/metrics", s.wrap("metrics", s.handleMetrics, handlerOptions{}))
 	}
 	if s.opts.EnablePprof {
-		mux.Handle("/debug/pprof/", s.wrap("pprof", http.HandlerFunc(pprof.Index), handlerOptions{}))
-		mux.Handle("/debug/pprof/cmdline", s.wrap("pprof", http.HandlerFunc(pprof.Cmdline), handlerOptions{}))
-		mux.Handle("/debug/pprof/profile", s.wrap("pprof", http.HandlerFunc(pprof.Profile), handlerOptions{}))
-		mux.Handle("/debug/pprof/symbol", s.wrap("pprof", http.HandlerFunc(pprof.Symbol), handlerOptions{}))
-		mux.Handle("/debug/pprof/trace", s.wrap("pprof", http.HandlerFunc(pprof.Trace), handlerOptions{}))
+		s.mux.Handle("/debug/pprof/", s.wrap("pprof", http.HandlerFunc(pprof.Index), handlerOptions{}))
+		s.mux.Handle("/debug/pprof/cmdline", s.wrap("pprof", http.HandlerFunc(pprof.Cmdline), handlerOptions{}))
+		s.mux.Handle("/debug/pprof/profile", s.wrap("pprof", http.HandlerFunc(pprof.Profile), handlerOptions{}))
+		s.mux.Handle("/debug/pprof/symbol", s.wrap("pprof", http.HandlerFunc(pprof.Symbol), handlerOptions{}))
+		s.mux.Handle("/debug/pprof/trace", s.wrap("pprof", http.HandlerFunc(pprof.Trace), handlerOptions{}))
 	}
+}
+
+func (s *Server) Mux() *http.ServeMux {
+	return s.mux
 }
 
 type handlerOptions struct {
