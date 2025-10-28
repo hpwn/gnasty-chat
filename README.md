@@ -101,7 +101,8 @@ All transports return the same JSON payload:
 | `GET /count` | Returns `{"count": N}` for the current filters. |
 | `GET /info` | Build metadata (`version`, `rev`, `built_at`, `go`). |
 | `GET /metrics` | Prometheus metrics (if enabled). |
-| `GET /healthz` | Liveness probe (200/"ok"). |
+| `GET /healthz` | JSON liveness probe with sink reachability. |
+| `GET /configz` | Effective configuration snapshot (secrets redacted). |
 
 Responses from `/messages` and `/count` are gzip-compressed when the client sends
 `Accept-Encoding: gzip`.
@@ -169,9 +170,9 @@ and monitoring production deployments.
 ## Docker quick start
 
 ```bash
-cp .env.example .env   # then edit TWITCH_TOKEN
+cp .env.example .env   # then edit Twitch credentials + sqlite path
 docker compose up --build
-curl -s localhost:8765/healthz
+curl -s localhost:8765/healthz | jq .
 ```
 
 ## SQLite tuning (optional)
@@ -183,4 +184,5 @@ variable is unset. Compose users can flip this via `.env`.
 ## Integrating with elora-chat
 
 When running under Compose, other services can connect to gnasty via
-`http://gnasty:8765` on the shared network.
+`http://gnasty:8765` on the shared network. See [`docs/config.md`](docs/config.md)
+for environment variables and shared volume guidance.
