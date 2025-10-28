@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/you/gnasty-chat/internal/config"
 	"github.com/you/gnasty-chat/internal/core"
 	"github.com/you/gnasty-chat/internal/harvester"
 	httpadmin "github.com/you/gnasty-chat/internal/http"
@@ -29,6 +30,10 @@ var (
 	gitSHA  = "unknown"
 	builtAt = ""
 )
+
+type noopWriter struct{}
+
+func (noopWriter) Write(core.ChatMessage) error { return errors.New("no sink configured") }
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
@@ -74,29 +79,91 @@ func main() {
 	flag.BoolVar(&httpPprof, "http-pprof", false, "Expose pprof handlers under /debug/pprof")
 	flag.Parse()
 
-	if twClientID == "" {
-		twClientID = strings.TrimSpace(os.Getenv("TWITCH_CLIENT_ID"))
-	}
-	if twClientSecret == "" {
-		twClientSecret = strings.TrimSpace(os.Getenv("TWITCH_CLIENT_SECRET"))
-	}
-	if twRefreshToken == "" {
-		twRefreshToken = strings.TrimSpace(os.Getenv("TWITCH_REFRESH_TOKEN"))
-	}
-	if twRefreshFile == "" {
-		twRefreshFile = strings.TrimSpace(os.Getenv("TWITCH_REFRESH_TOKEN_FILE"))
-	}
-	if twTokenFile == "" {
-		if env := strings.TrimSpace(os.Getenv("TWITCH_TOKEN_FILE")); env != "" {
-			twTokenFile = env
+	overrides := make(map[string]bool)
+	flag.Visit(func(f *flag.Flag) {
+		overrides[f.Name] = true
+	})
+
+	cfg := config.Load()
+
+	addSink := func(name string) {
+		if !cfg.HasSink(name) {
+			cfg.Sinks = append(cfg.Sinks, name)
 		}
 	}
 
-	twClientID = strings.TrimSpace(twClientID)
-	twClientSecret = strings.TrimSpace(twClientSecret)
-	twRefreshToken = strings.TrimSpace(twRefreshToken)
-	twRefreshFile = strings.TrimSpace(twRefreshFile)
-	twTokenFile = strings.TrimSpace(twTokenFile)
+	if overrides["sqlite"] {
+		dbPath = strings.TrimSpace(dbPath)
+		cfg.Sink.SQLite.Path = dbPath
+		addSink("sqlite")
+	}
+	if overrides["twitch-channel"] {
+		trimmed := strings.TrimSpace(twChannel)
+		if trimmed != "" {
+			cfg.Twitch.Channels = []string{trimmed}
+			cfg.Twitch.Enabled = true
+		} else {
+			cfg.Twitch.Channels = nil
+		}
+	}
+	if overrides["twitch-nick"] {
+		cfg.Twitch.Nick = strings.TrimSpace(twNick)
+	}
+	if overrides["twitch-token"] {
+		cfg.Twitch.Token = strings.TrimSpace(twToken)
+	}
+	if overrides["twitch-token-file"] {
+		cfg.Twitch.TokenFile = strings.TrimSpace(twTokenFile)
+	}
+	if overrides["twitch-client-id"] {
+		cfg.Twitch.ClientID = strings.TrimSpace(twClientID)
+	}
+	if overrides["twitch-client-secret"] {
+		cfg.Twitch.ClientSecret = strings.TrimSpace(twClientSecret)
+	}
+	if overrides["twitch-refresh-token"] {
+		cfg.Twitch.RefreshToken = strings.TrimSpace(twRefreshToken)
+	}
+	if overrides["twitch-refresh-token-file"] {
+		cfg.Twitch.RefreshTokenFile = strings.TrimSpace(twRefreshFile)
+	}
+	if overrides["twitch-tls"] {
+		cfg.Twitch.TLS = twTLS
+	}
+	if overrides["youtube-url"] {
+		cfg.YouTube.LiveURL = strings.TrimSpace(ytURL)
+		cfg.YouTube.Enabled = cfg.YouTube.LiveURL != ""
+	}
+
+	if len(cfg.Twitch.Channels) > 0 {
+		cfg.Twitch.Enabled = true
+	}
+
+	dbPath = cfg.Sink.SQLite.Path
+	if len(cfg.Sinks) == 0 {
+		log.Printf("harvester: no sinks configured; supported sinks: sqlite")
+	}
+
+	if len(cfg.Twitch.Channels) > 0 {
+		twChannel = cfg.Twitch.Channels[0]
+		if len(cfg.Twitch.Channels) > 1 {
+			log.Printf("harvester: twitch: multiple channels configured; using %s", twChannel)
+		}
+	} else {
+		twChannel = ""
+	}
+	twNick = cfg.Twitch.Nick
+	twToken = cfg.Twitch.Token
+	twTokenFile = cfg.Twitch.TokenFile
+	twClientID = cfg.Twitch.ClientID
+	twClientSecret = cfg.Twitch.ClientSecret
+	twRefreshToken = cfg.Twitch.RefreshToken
+	twRefreshFile = cfg.Twitch.RefreshTokenFile
+	twTLS = cfg.Twitch.TLS
+	ytURL = cfg.YouTube.LiveURL
+
+	configSnapshot := cfg.Redacted()
+	log.Printf("%s", cfg.SummaryJSON())
 
 	tokenFiles := twitchauth.TokenFiles{
 		AccessPath:   twTokenFile,
@@ -117,28 +184,34 @@ func main() {
 		cancel()
 	}()
 
-	sinkDB, err := sink.OpenSQLite(dbPath)
-	if err != nil {
-		log.Fatalf("harvester: open sqlite: %v", err)
-	}
-	defer func() {
-		if err := sinkDB.Close(); err != nil {
-			log.Printf("harvester: closing sink: %v", err)
-		}
-	}()
-
-	if err := sinkDB.Ping(); err != nil {
-		log.Fatalf("harvester: ping sqlite: %v", err)
-	}
-
-	type messageWriter interface {
-		Write(core.ChatMessage) error
-	}
-
 	var (
-		writer messageWriter = sinkDB
-		api    *httpapi.Server
+		sinkDB   *sink.SQLiteSink
+		api      *httpapi.Server
+		writer   sink.Writer = noopWriter{}
+		buffered *sink.BufferedWriter
 	)
+
+	if cfg.HasSink("sqlite") {
+		db, err := sink.OpenSQLite(dbPath)
+		if err != nil {
+			log.Fatalf("harvester: open sqlite: %v", err)
+		}
+		sinkDB = db
+		if err := sinkDB.Ping(); err != nil {
+			log.Fatalf("harvester: ping sqlite: %v", err)
+		}
+		writer = sinkDB
+	} else {
+		log.Printf("harvester: sqlite sink disabled (configured sinks=%v)", cfg.Sinks)
+	}
+
+	if sinkDB != nil {
+		defer func() {
+			if err := sinkDB.Close(); err != nil {
+				log.Printf("harvester: closing sink: %v", err)
+			}
+		}()
+	}
 
 	var corsOrigins []string
 	if strings.TrimSpace(httpCorsOrigins) != "" {
@@ -158,27 +231,48 @@ func main() {
 	}
 
 	if httpAddr != "" {
-		api = httpapi.New(sinkDB, httpapi.Options{
-			Addr:            httpAddr,
-			CORSOrigins:     corsOrigins,
-			RateLimitRPS:    httpRateRPS,
-			RateLimitBurst:  httpRateBurst,
-			EnableMetrics:   httpMetrics,
-			EnableAccessLog: httpAccessLog,
-			EnablePprof:     httpPprof,
-			Build:           build,
-		})
-		if har != nil {
-			admin := httpadmin.New(har)
-			admin.Register(api.Mux())
+		if sinkDB == nil {
+			log.Printf("harvester: http api requested but sqlite sink is disabled; skipping listener")
+		} else {
+			api = httpapi.New(sinkDB, httpapi.Options{
+				Addr:            httpAddr,
+				CORSOrigins:     corsOrigins,
+				RateLimitRPS:    httpRateRPS,
+				RateLimitBurst:  httpRateBurst,
+				EnableMetrics:   httpMetrics,
+				EnableAccessLog: httpAccessLog,
+				EnablePprof:     httpPprof,
+				Build:           build,
+				ConfigSnapshot:  configSnapshot,
+			})
+			if har != nil {
+				admin := httpadmin.New(har)
+				admin.Register(api.Mux())
+			}
+			go func() {
+				if err := api.Start(); err != nil {
+					log.Fatalf("harvester: http api: %v", err)
+				}
+			}()
+			writer = sink.WithAPI(sinkDB, api)
+			log.Printf("harvester: http api ready on %s", httpAddr)
 		}
-		go func() {
-			if err := api.Start(); err != nil {
-				log.Fatalf("harvester: http api: %v", err)
+	}
+
+	if sinkDB != nil && (cfg.Batch() > 1 || cfg.FlushInterval() > 0) {
+		buffered = sink.NewBufferedWriter(writer, sink.BufferedOptions{
+			BatchSize:     cfg.Batch(),
+			FlushInterval: cfg.FlushInterval(),
+		})
+		writer = buffered
+	}
+
+	if buffered != nil {
+		defer func() {
+			if err := buffered.Close(); err != nil {
+				log.Printf("harvester: flush buffered sink: %v", err)
 			}
 		}()
-		writer = sink.WithAPI(sinkDB, api)
-		log.Printf("harvester: http api ready on %s", httpAddr)
 	}
 
 	started := 0
@@ -345,7 +439,7 @@ func main() {
 	}
 
 	if started == 0 {
-		log.Printf("harvester: no receivers configured")
+		log.Printf("harvester: ERROR: No receivers configured. Set GNASTY_SINKS=sqlite and GNASTY_SINK_SQLITE_PATH=/data/elora.db (shared with elora-chat).")
 	}
 
 	<-ctx.Done()

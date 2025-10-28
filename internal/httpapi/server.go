@@ -30,6 +30,7 @@ type Options struct {
 	EnableAccessLog bool
 	EnablePprof     bool
 	Build           BuildInfo
+	ConfigSnapshot  map[string]any
 }
 
 type streamClient struct {
@@ -83,6 +84,7 @@ func New(store Store, opts Options) *Server {
 
 func (s *Server) registerRoutes() {
 	s.mux.Handle("/healthz", s.wrap("healthz", s.handleHealthz, handlerOptions{}))
+	s.mux.Handle("/configz", s.wrap("configz", s.handleConfigz, handlerOptions{}))
 	s.mux.Handle("/count", s.wrap("count", s.handleCount, handlerOptions{gzip: true}))
 	s.mux.Handle("/messages", s.wrap("messages", s.handleMessages, handlerOptions{gzip: true}))
 	s.mux.Handle("/stream", s.wrap("stream", s.handleStream, handlerOptions{}))
@@ -183,9 +185,30 @@ func (s *Server) logAccess(r *http.Request, status int, dur time.Duration, bytes
 	log.Printf("http access remote=%s method=%s path=%s status=%d dur=%s bytes=%d ua=%q", remote, r.Method, path, status, dur, bytes, ua)
 }
 
-func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	status := http.StatusOK
+	payload := map[string]any{"status": "ok"}
+	if s.store != nil {
+		if pinger, ok := s.store.(interface{ Ping() error }); ok {
+			if err := pinger.Ping(); err != nil {
+				status = http.StatusServiceUnavailable
+				payload["sink"] = "error"
+				payload["error"] = err.Error()
+			} else {
+				payload["sink"] = "ok"
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func (s *Server) handleConfigz(w http.ResponseWriter, _ *http.Request) {
+	payload := map[string]any{"config": s.opts.ConfigSnapshot}
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("ok"))
+	_ = json.NewEncoder(w).Encode(payload)
 }
 
 func (s *Server) handleCount(w http.ResponseWriter, r *http.Request) {
