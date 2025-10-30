@@ -200,6 +200,9 @@ func main() {
 		if err := sinkDB.Ping(); err != nil {
 			log.Fatalf("harvester: ping sqlite: %v", err)
 		}
+		if err := migrateSQLite(ctx, sinkDB.RawDB()); err != nil {
+			log.Fatalf("harvester: sqlite migrate: %v", err)
+		}
 		writer = sinkDB
 	} else {
 		log.Printf("harvester: sqlite sink disabled (configured sinks=%v)", cfg.Sinks)
