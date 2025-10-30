@@ -103,9 +103,16 @@ All transports return the same JSON payload:
 | `GET /metrics` | Prometheus metrics (if enabled). |
 | `GET /healthz` | JSON liveness probe with sink reachability. |
 | `GET /configz` | Effective configuration snapshot (secrets redacted). |
+| `POST /admin/twitch/reload` | Forces the Twitch IRC client to reconnect after reloading credentials. |
 
 Responses from `/messages` and `/count` are gzip-compressed when the client sends
 `Accept-Encoding: gzip`.
+
+Example admin reload response:
+
+```json
+{ "status": "ok", "reloaded": true, "login": "streamer" }
+```
 
 Example queries:
 

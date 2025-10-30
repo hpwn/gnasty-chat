@@ -31,6 +31,14 @@ func (s *Server) Register(mux *http.ServeMux) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		_ = json.NewEncoder(w).Encode(map[string]string{"ok": "true", "login": login})
+		_ = json.NewEncoder(w).Encode(struct {
+			Status   string `json:"status"`
+			Reloaded bool   `json:"reloaded"`
+			Login    string `json:"login,omitempty"`
+		}{
+			Status:   "ok",
+			Reloaded: true,
+			Login:    login,
+		})
 	})
 }
