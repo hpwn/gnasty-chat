@@ -159,6 +159,14 @@ func main() {
 	twClientSecret = cfg.Twitch.ClientSecret
 	twRefreshToken = cfg.Twitch.RefreshToken
 	twRefreshFile = cfg.Twitch.RefreshTokenFile
+	if strings.TrimSpace(twRefreshFile) != "" {
+		data, err := os.ReadFile(twRefreshFile)
+		if err != nil {
+			log.Printf("harvester: twitch refresh token file: %v", err)
+		} else {
+			twRefreshToken = strings.TrimSpace(string(data))
+		}
+	}
 	twTLS = cfg.Twitch.TLS
 	ytURL = cfg.YouTube.LiveURL
 
@@ -171,7 +179,26 @@ func main() {
 		ClientID:     twClientID,
 		ClientSecret: twClientSecret,
 	}
-	har := harvester.New(tokenFiles, nil)
+	var refreshMgr *twitch.RefreshManager
+	if strings.TrimSpace(twChannel) != "" &&
+		strings.TrimSpace(twClientID) != "" &&
+		strings.TrimSpace(twClientSecret) != "" &&
+		strings.TrimSpace(twRefreshToken) != "" {
+		if strings.TrimSpace(twTokenFile) == "" {
+			log.Fatal("harvester: twitch-token-file is required when refresh inputs provided")
+		}
+		refreshMgr = &twitch.RefreshManager{
+			ClientID:     twClientID,
+			ClientSecret: twClientSecret,
+			RefreshToken: twRefreshToken,
+			TokenFile:    twTokenFile,
+		}
+	}
+	var refreshUpdater func(string)
+	if refreshMgr != nil {
+		refreshUpdater = refreshMgr.SetRefreshToken
+	}
+	har := harvester.New(tokenFiles, nil, refreshUpdater)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -298,19 +325,9 @@ func main() {
 
 		tokenFilePath := twTokenFile
 
-		if twRefreshFile != "" {
-			data, err := os.ReadFile(twRefreshFile)
-			if err != nil {
-				log.Printf("harvester: twitch refresh token file: %v", err)
-			} else {
-				twRefreshToken = strings.TrimSpace(string(data))
-			}
-		}
-
 		var (
-			token      string
-			loader     *twitch.FileTokenLoader
-			refreshMgr *twitch.RefreshManager
+			token  string
+			loader *twitch.FileTokenLoader
 		)
 		tokenUpdates := make(chan tokenUpdate, 4)
 
@@ -325,18 +342,12 @@ func main() {
 			}
 		}
 
-		if twClientID != "" && twClientSecret != "" && twRefreshToken != "" {
+		if refreshMgr != nil {
 			if tokenFilePath == "" {
 				log.Fatal("harvester: twitch-token-file is required when refresh inputs provided")
 			}
-
-			refreshMgr = &twitch.RefreshManager{
-				ClientID:     twClientID,
-				ClientSecret: twClientSecret,
-				RefreshToken: twRefreshToken,
-				TokenFile:    tokenFilePath,
-			}
-
+			refreshMgr.TokenFile = tokenFilePath
+			refreshMgr.SetRefreshToken(twRefreshToken)
 			accessToken, _, err := refreshMgr.Refresh(ctx)
 			if err != nil {
 				log.Fatalf("harvester: twitch refresh: %v", err)
