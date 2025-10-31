@@ -58,11 +58,15 @@ func migrateSQLite(ctx context.Context, db *sql.DB) error {
 		}
 	}
 
-	dedupeSQL := `DELETE FROM messages
-WHERE rowid NOT IN (
-  SELECT MIN(rowid)
-  FROM messages
-  GROUP BY platform, platform_msg_id
+    dedupeSQL := `DELETE FROM messages
+WHERE platform_msg_id IS NOT NULL
+  AND TRIM(platform_msg_id) != ''
+  AND rowid NOT IN (
+    SELECT MIN(rowid)
+    FROM messages
+    WHERE platform_msg_id IS NOT NULL
+      AND TRIM(platform_msg_id) != ''
+    GROUP BY platform, platform_msg_id
 );`
 	if res, execErr := db.ExecContext(ctx, dedupeSQL); execErr != nil {
 		return fmt.Errorf("sqlite: dedupe platform/platform_msg_id: %w", execErr)

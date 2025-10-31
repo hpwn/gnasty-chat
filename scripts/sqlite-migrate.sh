@@ -48,10 +48,14 @@ UPDATE messages SET raw_json='' WHERE raw_json IS NULL;
 UPDATE messages SET emotes_json='[]' WHERE emotes_json IS NULL;
 UPDATE messages SET badges_json='[]' WHERE badges_json IS NULL;
 DELETE FROM messages
-WHERE rowid NOT IN (
-  SELECT MIN(rowid)
-  FROM messages
-  GROUP BY platform, platform_msg_id
+WHERE platform_msg_id IS NOT NULL
+  AND TRIM(platform_msg_id) != ''
+  AND rowid NOT IN (
+    SELECT MIN(rowid)
+    FROM messages
+    WHERE platform_msg_id IS NOT NULL
+      AND TRIM(platform_msg_id) != ''
+    GROUP BY platform, platform_msg_id
 );
 CREATE UNIQUE INDEX IF NOT EXISTS messages_uq_platform_msg
         ON messages(platform, platform_msg_id);

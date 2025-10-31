@@ -41,7 +41,8 @@ func TestMigrateSQLite(t *testing.T) {
 VALUES
   ('twitch', 'abc', 1, 'alice', 'hello', NULL, NULL, NULL),
   ('twitch', 'abc', 1, 'alice', 'hello again', NULL, NULL, NULL),
-  ('youtube', NULL, 2, 'bob', 'hi', NULL, NULL, NULL);
+  ('youtube', NULL, 2, 'bob', 'hi', NULL, NULL, NULL),
+  ('youtube', NULL, 3, 'bob', 'hi again', NULL, NULL, NULL);
 `
 	if _, err := db.Exec(seed); err != nil {
 		t.Fatalf("seed rows: %v", err)
@@ -64,14 +65,22 @@ VALUES
 		t.Fatalf("expected colour column to be NOT NULL with default, got %+v", colour)
 	}
 
-	// ensure duplicates trimmed to single row
-	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM messages WHERE platform='twitch' AND platform_msg_id='abc';`).Scan(&count); err != nil {
-		t.Fatalf("count duplicates: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("expected 1 twitch row after dedupe, got %d", count)
-	}
+        // ensure duplicates trimmed to single row
+        var count int
+        if err := db.QueryRow(`SELECT COUNT(*) FROM messages WHERE platform='twitch' AND platform_msg_id='abc';`).Scan(&count); err != nil {
+                t.Fatalf("count duplicates: %v", err)
+        }
+        if count != 1 {
+                t.Fatalf("expected 1 twitch row after dedupe, got %d", count)
+        }
+
+        // ensure rows with NULL ids are preserved
+        if err := db.QueryRow(`SELECT COUNT(*) FROM messages WHERE platform='youtube';`).Scan(&count); err != nil {
+                t.Fatalf("count youtube rows: %v", err)
+        }
+        if count != 2 {
+                t.Fatalf("expected 2 youtube rows after dedupe, got %d", count)
+        }
 
 	// ensure NULLs replaced
 	var nulls int
