@@ -1,24 +1,30 @@
-# Dockerfile.pr21
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.6
 
-# Builder (pin Go to avoid host toolchain issues)
-FROM --platform=$BUILDPLATFORM golang:1.22.8 AS builder
+# --- builder ---
+ARG GO_VERSION=1.23.3
+FROM golang:${GO_VERSION} AS builder
+
+ENV CGO_ENABLED=0 \
+    GOFLAGS="-buildvcs=false" \
+    GOTOOLCHAIN=local
+
 WORKDIR /src
 
-# Cache deps
+# Cache deps early
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go mod download
 
 # Build
 COPY . .
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
-ENV CGO_ENABLED=0
-RUN GOOS=$TARGETOS GOARCH=$TARGETARCH \
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    GOOS=linux GOARCH=amd64 \
     go build -trimpath -ldflags="-s -w" -o /out/harvester ./cmd/harvester
 
-# Minimal runtime
-FROM --platform=$TARGETPLATFORM gcr.io/distroless/base-debian12:nonroot
+# --- runtime ---
+FROM gcr.io/distroless/base-debian12:nonroot
 COPY --from=builder /out/harvester /harvester
 USER nonroot:nonroot
 ENTRYPOINT ["/harvester"]
