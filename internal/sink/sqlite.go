@@ -50,29 +50,31 @@ func OpenSQLite(path string) (*SQLiteSink, error) {
 	}
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
-		return nil, errors.Wrap(err, "apply schema")
+		return nil, errors.Wrapf(err, "apply schema (%s)", path)
 	}
 	if err := migrateLegacyMessagesTable(context.Background(), db); err != nil {
 		_ = db.Close()
-		return nil, err
+		return nil, errors.Wrapf(err, "migrate legacy schema (%s)", path)
 	}
 	if err := ensureIndices(context.Background(), db); err != nil {
 		_ = db.Close()
-		return nil, err
+		return nil, errors.Wrapf(err, "ensure indices (%s)", path)
 	}
 	if _, err := db.Exec(`PRAGMA journal_mode=wal;`); err != nil {
 		_ = db.Close()
-		return nil, errors.Wrap(err, "set WAL")
+		return nil, errors.Wrapf(err, "set WAL (%s)", path)
 	}
 	ApplySQLitePragmas(context.Background(), db)
 	return &SQLiteSink{db: db}, nil
 }
 
+func (s *SQLiteSink) RawDB() *sql.DB { return s.db }
+
 func ensureIndices(ctx context.Context, db *sql.DB) error {
 	stmts := []string{
-		`CREATE UNIQUE INDEX IF NOT EXISTS messages_platform_msg_id
-           ON messages(platform, platform_msg_id)
-           WHERE platform_msg_id IS NOT NULL AND platform_msg_id != '';`,
+		`DROP INDEX IF EXISTS messages_platform_msg_id;`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS messages_uq_platform_msg
+           ON messages(platform, platform_msg_id);`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS messages_upsert_key
            ON messages(platform, ts, username, text);`,
 	}
@@ -301,9 +303,18 @@ func (s *SQLiteSink) Write(msg core.ChatMessage) error {
 	rawJSON := jsonText(msg.RawJSON, msg.Raw, "")
 
 	conflict := `ON CONFLICT(platform, ts, username, text) DO NOTHING`
-	var platformMsgArg any
+	var (
+		platformMsgArg any
+	)
 	if platformMsgID != "" {
-		conflict = `ON CONFLICT(platform, platform_msg_id) DO NOTHING`
+		conflict = `ON CONFLICT(platform, platform_msg_id) DO UPDATE SET
+            ts=excluded.ts,
+            username=excluded.username,
+            text=excluded.text,
+            emotes_json=excluded.emotes_json,
+            raw_json=excluded.raw_json,
+            badges_json=excluded.badges_json,
+            colour=excluded.colour`
 		platformMsgArg = platformMsgID
 	} else {
 		platformMsgArg = nil

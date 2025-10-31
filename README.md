@@ -188,6 +188,22 @@ Set `GN_SQLITE_TUNING=1` to apply WAL mode, adjust synchronous and busy timeout,
 increase mmap/temp_store settings on startup. The defaults remain unchanged when the
 variable is unset. Compose users can flip this via `.env`.
 
+## SQLite maintenance
+
+The harvester runs a self-healing migration on startup that fills in missing
+columns, normalises legacy `NULL` JSON blobs, and enforces
+`UNIQUE(platform, platform_msg_id)` for reliable upserts. You can run the same
+steps manually (for CI or offline maintenance) with:
+
+```bash
+./scripts/sqlite-migrate.sh             # defaults to ./data/elora.db
+./scripts/sqlite-migrate.sh custom.db   # relative to ./data
+```
+
+The helper mounts `./data` when it exists so the migration touches the same
+database that Compose uses. When `./data` is absent it falls back to the
+currently running `gnasty-harvester` container volume.
+
 ## Integrating with elora-chat
 
 When running under Compose, other services can connect to gnasty via
