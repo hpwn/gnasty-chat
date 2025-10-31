@@ -1,10 +1,23 @@
+# Existing ignores
 data/
 **/*.db
 **/*.sqlite
 **/*.log
 **/node_modules
+harvester
+
+# Git metadata
 .git
+.gitignore
 .github
+
+# Test artifacts
 **/*.test
 **/*.out
-harvester
+
+# Large assets not needed in build context
+**/*.png
+**/*.jpg
+**/*.gif
+**/*.pdf
+**/*.svg
