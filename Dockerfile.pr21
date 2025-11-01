@@ -1,16 +1,13 @@
-# syntax=docker/dockerfile:1.6
+# Dockerfile.pr21
+# syntax=docker/dockerfile:1.7
 
-# --- builder ---
+# Builder (pin Go to avoid host toolchain issues)
 ARG GO_VERSION=1.23.3
-FROM golang:${GO_VERSION} AS builder
-
-ENV CGO_ENABLED=0 \
-    GOFLAGS="-buildvcs=false" \
-    GOTOOLCHAIN=local
-
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION} AS builder
 WORKDIR /src
+ENV CGO_ENABLED=0 GOFLAGS=-buildvcs=false
 
-# Cache deps early
+# Cache deps
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
@@ -18,12 +15,14 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 # Build
 COPY . .
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    GOOS=linux GOARCH=amd64 \
+    GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags="-s -w" -o /out/harvester ./cmd/harvester
 
-# --- runtime ---
+# Minimal runtime
 FROM gcr.io/distroless/base-debian12:nonroot
 COPY --from=builder /out/harvester /harvester
 USER nonroot:nonroot
