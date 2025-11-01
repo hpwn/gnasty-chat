@@ -26,6 +26,9 @@ go build -tags 'sqlite_omit_load_extension' ./cmd/harvester
 ```bash
 # from repo root
 docker buildx build --platform=linux/amd64 \
+  --build-arg VERSION=$(git describe --tags --always 2>/dev/null || echo dev) \
+  --build-arg COMMIT=$(git rev-parse --short HEAD) \
+  --build-arg BUILD_TIME=$(date -u +%FT%TZ) \
   -f Dockerfile.pr21 -t gnasty-chat:pr21 --load .
 
 # Optionally tag as latest for local compose stacks that reference :latest

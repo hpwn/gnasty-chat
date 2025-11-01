@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"log/slog"
 	"os"
@@ -22,13 +23,8 @@ import (
 	"github.com/you/gnasty-chat/internal/twitch"
 	"github.com/you/gnasty-chat/internal/twitchauth"
 	"github.com/you/gnasty-chat/internal/twitchirc"
+	"github.com/you/gnasty-chat/internal/version"
 	"github.com/you/gnasty-chat/internal/ytlive"
-)
-
-var (
-	version = "dev"
-	gitSHA  = "unknown"
-	builtAt = ""
 )
 
 type noopWriter struct{}
@@ -39,6 +35,7 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
 	var (
+		versionFlag     bool
 		dbPath          string
 		twChannel       string
 		twNick          string
@@ -59,6 +56,7 @@ func main() {
 		httpPprof       bool
 	)
 
+	flag.BoolVar(&versionFlag, "version", false, "Print build version and exit")
 	flag.StringVar(&dbPath, "sqlite", "chat.db", "Path to SQLite database file")
 	flag.StringVar(&twChannel, "twitch-channel", "", "Twitch channel to join (without #)")
 	flag.StringVar(&twNick, "twitch-nick", "", "Twitch nickname to login as")
@@ -78,6 +76,16 @@ func main() {
 	flag.BoolVar(&httpAccessLog, "http-access-log", true, "Log HTTP access records")
 	flag.BoolVar(&httpPprof, "http-pprof", false, "Expose pprof handlers under /debug/pprof")
 	flag.Parse()
+
+	if versionFlag {
+		fmt.Printf(
+			"harvester version: %s (commit %s, built %s)\n",
+			version.Version,
+			version.Commit,
+			version.BuildTime,
+		)
+		os.Exit(0)
+	}
 
 	overrides := make(map[string]bool)
 	flag.Visit(func(f *flag.Flag) {
@@ -253,9 +261,9 @@ func main() {
 		}
 	}
 
-	build := httpapi.BuildInfo{Version: version, Revision: gitSHA}
-	if builtAt != "" {
-		if t, err := time.Parse(time.RFC3339, builtAt); err == nil {
+	build := httpapi.BuildInfo{Version: version.Version, Revision: version.Commit}
+	if version.BuildTime != "" && version.BuildTime != "unknown" {
+		if t, err := time.Parse(time.RFC3339, version.BuildTime); err == nil {
 			build.BuiltAt = t
 		}
 	}
