@@ -26,6 +26,7 @@ type RefreshManager struct {
 	TokenFile    string
 	HTTP         *http.Client
 
+	refreshMu   sync.RWMutex
 	mu          sync.Mutex
 	lastExpires time.Duration
 }
@@ -37,6 +38,16 @@ type refreshResponse struct {
 	Message     string `json:"message"`
 	Error       string `json:"error"`
 	ErrorDesc   string `json:"error_description"`
+}
+
+func (m *RefreshManager) SetRefreshToken(token string) {
+	if m == nil {
+		return
+	}
+	trimmed := strings.TrimSpace(token)
+	m.refreshMu.Lock()
+	m.RefreshToken = trimmed
+	m.refreshMu.Unlock()
 }
 
 func (m *RefreshManager) Refresh(ctx context.Context) (string, time.Duration, error) {
@@ -53,8 +64,14 @@ func (m *RefreshManager) Refresh(ctx context.Context) (string, time.Duration, er
 
 	clientID := strings.TrimSpace(m.ClientID)
 	clientSecret := strings.TrimSpace(m.ClientSecret)
-	refreshToken := strings.TrimSpace(m.RefreshToken)
-	tokenFile := strings.TrimSpace(m.TokenFile)
+
+	m.refreshMu.RLock()
+	refreshTokenRaw := m.RefreshToken
+	tokenFileRaw := m.TokenFile
+	m.refreshMu.RUnlock()
+
+	refreshToken := strings.TrimSpace(refreshTokenRaw)
+	tokenFile := strings.TrimSpace(tokenFileRaw)
 
 	if clientID == "" || clientSecret == "" || refreshToken == "" {
 		return "", 0, errors.New("twitch: refresh requires client credentials and refresh token")
