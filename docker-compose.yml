@@ -13,15 +13,17 @@ services:
       - rifftrax
       - -twitch-nick
       - hp_az
-      - -twitch-token
-      - ${TWITCH_TOKEN}
+      - -twitch-token-file
+      - /data/twitch_irc.pass
+      - -twitch-refresh-token-file
+      - /data/twitch_refresh.pass
       - -twitch-tls
-      - ${TWITCH_TLS}
+      - ${TWITCH_TLS-true}
     environment:
       GN_SQLITE_TUNING: "${GN_SQLITE_TUNING-0}"
-      TWITCH_TOKEN: "${TWITCH_TOKEN}"
     ports: ["8765:8765"]
     volumes: ["./data:/data"]
+    restart: unless-stopped
     networks: [default]
 
 networks:
