@@ -58,6 +58,13 @@ Twitch authentication accepts either a static token or a file that rotates in pl
   raw token or the `oauth:` form; the harvester polls every ~10s and reconnects when it
   changes).
 
+Required IRC scopes:
+
+- `chat:read`
+- `chat:edit`
+
+Helix scopes are unused.
+
 ### Automatic Twitch token refresh
 
 Provide a Twitch refresh token plus app credentials to let gnasty-chat fetch new IRC
@@ -85,6 +92,43 @@ Security notes:
 - The token file is rewritten with permissions `0600` and fsync'd on every refresh.
 - On authentication failures Twitch IRC forces an immediate refresh with bounded
   backoff; no manual restart is required.
+
+### Bring-up with Authorization Code
+
+Use the standard Authorization Code grant to provision both the IRC access token and
+its refresh token:
+
+1. Direct a browser to the Twitch authorize endpoint (replace the placeholders and keep
+   the redirect URL exactly as registered with Twitch):
+
+   ```
+   https://id.twitch.tv/oauth2/authorize?client_id=<client_id>&redirect_uri=<urlencoded_redirect_uri>&response_type=code&scope=chat:read+chat:edit&state=<random_nonce>
+   ```
+
+2. After Twitch redirects back with `?code=...`, exchange it for tokens:
+
+   ```bash
+   curl -sS -X POST 'https://id.twitch.tv/oauth2/token' \
+     -d client_id="$TWITCH_CLIENT_ID" \
+     -d client_secret="$TWITCH_CLIENT_SECRET" \
+     -d code="$AUTH_CODE" \
+     -d grant_type=authorization_code \
+     -d redirect_uri="$TWITCH_REDIRECT_URI" \
+     | tee twitch-oauth.json
+   ```
+
+3. Populate the files that gnasty-chat watches for IRC and refresh credentials (the
+   `oauth:` prefix is required for IRC connections):
+
+   ```bash
+   mkdir -p /data
+   jq -r '.access_token' twitch-oauth.json | sed 's/^/oauth:/' > /data/twitch_irc.pass
+   jq -r '.refresh_token' twitch-oauth.json > /data/twitch_refresh.pass
+   chmod 600 /data/twitch_irc.pass /data/twitch_refresh.pass
+   ```
+
+Future refreshes can reuse `/data/twitch_refresh.pass`; gnasty-chat will automatically
+rotate `/data/twitch_irc.pass` as long as the refresh flow is configured.
 
 ```bash
 ./harvester \
@@ -214,6 +258,8 @@ These counters are useful while hammer-testing with `hey`, validating filters wi
 and monitoring production deployments.
 
 ## Docker quick start
+
+Need to mint fresh Twitch tokens? See [Bring-up with Authorization Code](#bring-up-with-authorization-code).
 
 ```bash
 cp .env.example .env   # then edit Twitch credentials + sqlite path
