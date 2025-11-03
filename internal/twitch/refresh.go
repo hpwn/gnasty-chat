@@ -76,12 +76,12 @@ func Refresh(clientID, clientSecret, refreshFile, ircFile string) error {
 		return errors.New("twitch: refresh returned empty tokens")
 	}
 
-	if err := atomicWrite(ircPath, []byte("oauth:"+strings.TrimSpace(rr.AccessToken)), 0o400); err != nil {
-		return fmt.Errorf("twitch: write irc token: %w", err)
-	}
-	if err := atomicWrite(refreshPath, []byte(strings.TrimSpace(rr.RefreshToken)), 0o400); err != nil {
-		return fmt.Errorf("twitch: write refresh token: %w", err)
-	}
+       if err := atomicWrite(ircPath, []byte("oauth:"+strings.TrimSpace(rr.AccessToken)), 0o600); err != nil {
+               return fmt.Errorf("twitch: write irc token: %w", err)
+       }
+       if err := atomicWrite(refreshPath, []byte(strings.TrimSpace(rr.RefreshToken)), 0o600); err != nil {
+               return fmt.Errorf("twitch: write refresh token: %w", err)
+       }
 
 	return nil
 }
