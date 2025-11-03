@@ -18,17 +18,24 @@ type TwitchConn interface {
 type Harvester struct {
 	tokens twitchauth.TokenFiles
 
-	mu sync.Mutex
-	tw TwitchConn
+	mu            sync.Mutex
+	tw            TwitchConn
+	refreshUpdate func(string)
 }
 
-func New(tokens twitchauth.TokenFiles, tw TwitchConn) *Harvester {
-	return &Harvester{tokens: tokens, tw: tw}
+func New(tokens twitchauth.TokenFiles, tw TwitchConn, refreshUpdate func(string)) *Harvester {
+	return &Harvester{tokens: tokens, tw: tw, refreshUpdate: refreshUpdate}
 }
 
 func (h *Harvester) SetTwitchConn(tw TwitchConn) {
 	h.mu.Lock()
 	h.tw = tw
+	h.mu.Unlock()
+}
+
+func (h *Harvester) SetRefreshUpdater(update func(string)) {
+	h.mu.Lock()
+	h.refreshUpdate = update
 	h.mu.Unlock()
 }
 
@@ -49,6 +56,15 @@ func (h *Harvester) ReloadTwitch() (string, error) {
 	token := twitch.NormalizeToken(access)
 	if token == "" {
 		return "", fmt.Errorf("access token empty")
+	}
+	if strings.TrimSpace(h.tokens.RefreshPath) != "" {
+		refresh, err := h.tokens.ReadRefresh()
+		if err != nil {
+			return "", fmt.Errorf("read refresh: %w", err)
+		}
+		if refresh != "" && h.refreshUpdate != nil {
+			h.refreshUpdate(refresh)
+		}
 	}
 	if err := h.tw.Reconnect(token); err != nil {
 		return "", fmt.Errorf("reconnect: %w", err)

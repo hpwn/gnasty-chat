@@ -21,6 +21,31 @@ go build ./...
 go build -tags 'sqlite_omit_load_extension' ./cmd/harvester
 ```
 
+### Build `harvester` in Docker (pinned Go)
+
+```bash
+# from repo root
+docker buildx build --platform=linux/amd64 \
+  --build-arg VERSION=$(git describe --tags --always 2>/dev/null || echo dev) \
+  --build-arg COMMIT=$(git rev-parse --short HEAD) \
+  --build-arg BUILD_TIME=$(date -u +%FT%TZ) \
+  -f Dockerfile.pr21 -t gnasty-chat:pr21 --load .
+
+# Optionally tag as latest for local compose stacks that reference :latest
+docker tag gnasty-chat:pr21 gnasty-chat:latest
+```
+
+**Hot-swap into elora-chat**
+
+```bash
+cd ~/Documents/dev/elora-chat
+docker compose up -d --force-recreate --no-deps gnasty-harvester
+
+# sanity checks
+docker logs -n 200 elora-gnasty-harvester-1
+curl -fsS http://localhost:9400/healthz
+```
+
 ## Running
 
 The harvester ingests Twitch IRC and/or YouTube Live chat and optionally serves the
