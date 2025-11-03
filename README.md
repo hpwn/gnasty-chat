@@ -75,7 +75,9 @@ session whenever a new token lands.
 
 "Required" means the values must be supplied via flag or env when enabling refresh. You may
 still combine the refresh flow with manual rotations - gnasty will watch the token file
-and reconnect when it changes.
+and reconnect when it changes. For production cutovers where you want the new token to
+apply immediately, call `POST /admin/twitch/reload` right after writing the updated
+credentials.
 
 Security notes:
 
@@ -128,16 +130,25 @@ All transports return the same JSON payload:
 | `GET /metrics` | Prometheus metrics (if enabled). |
 | `GET /healthz` | JSON liveness probe with sink reachability. |
 | `GET /configz` | Effective configuration snapshot (secrets redacted). |
-| `POST /admin/twitch/reload` | Forces the Twitch IRC client to reconnect after reloading credentials. |
+| `POST /admin/twitch/reload` | Forces the Twitch IRC client to reload the token file (if present) and reconnect immediately. |
 
 Responses from `/messages` and `/count` are gzip-compressed when the client sends
 `Accept-Encoding: gzip`.
 
-Example admin reload response:
+#### `POST /admin/twitch/reload`
 
-```json
-{ "status": "ok", "reloaded": true, "login": "streamer" }
-```
+- **Method:** `POST`
+- **Response:**
+
+  ```json
+  { "status": "ok", "reloaded": true, "login": "streamer" }
+  ```
+
+- **Usage:** Trigger a manual reconnect after rotating the Twitch IRC token on disk, or when testing new credentials in staging.
+  The endpoint is intended for trusted operators and should be called from automation (e.g. deploy hooks) or secure shells.
+
+When the harvester runs with `-twitch-token-file`, it already watches the file for changes and reconnects automatically. `POST
+/admin/twitch/reload` lets you force the reload path immediately instead of waiting for the next poll.
 
 Example queries:
 
@@ -195,6 +206,9 @@ The same filters apply to `/messages`, `/count`, `/stream`, and `/ws`.
   `gnasty_ws_clients`, `gnasty_sse_clients`, `gnasty_messages_sent_total`,
   `gnasty_broadcast_drops_total`, and `gnasty_db_write_errors_total`.
 - **pprof:** enable `-http-pprof` to serve `/debug/pprof/*` for live profiling.
+- **Manual Twitch reloads:** `POST /admin/twitch/reload` forces the IRC client to reread the
+  token file immediately. Use this in deployment hooks after rotating credentials when you
+  cannot wait for the built-in file watcher (~10s poll) to detect the change.
 
 These counters are useful while hammer-testing with `hey`, validating filters with `curl`,
 and monitoring production deployments.
