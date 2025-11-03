@@ -356,13 +356,45 @@ func main() {
 			}
 			refreshMgr.TokenFile = tokenFilePath
 			refreshMgr.SetRefreshToken(twRefreshToken)
-			accessToken, _, err := refreshMgr.Refresh(ctx)
-			if err != nil {
-				log.Fatalf("harvester: twitch refresh: %v", err)
-			}
-			token = twitch.NormalizeToken(accessToken)
-			if token == "" {
-				log.Fatal("harvester: received empty twitch token after refresh")
+
+			refreshFilePath := strings.TrimSpace(twRefreshFile)
+			if refreshFilePath == "" {
+				accessToken, _, err := refreshMgr.Refresh(ctx)
+				if err != nil {
+					log.Fatalf("harvester: twitch refresh: %v", err)
+				}
+				token = twitch.NormalizeToken(accessToken)
+				if token == "" {
+					log.Fatal("harvester: received empty twitch token after refresh")
+				}
+			} else {
+				if err := twitch.Refresh(twClientID, twClientSecret, refreshFilePath, tokenFilePath); err != nil {
+					log.Fatalf("harvester: twitch refresh: %v", err)
+				}
+
+				if loader != nil {
+					loaded, _, err := loader.Load()
+					if err != nil {
+						log.Fatalf("harvester: twitch refresh load token: %v", err)
+					}
+					token = loaded
+				} else {
+					data, err := os.ReadFile(tokenFilePath)
+					if err != nil {
+						log.Fatalf("harvester: twitch refresh read token: %v", err)
+					}
+					token = twitch.NormalizeToken(string(data))
+				}
+
+				refreshData, err := os.ReadFile(refreshFilePath)
+				if err != nil {
+					log.Fatalf("harvester: twitch refresh read refresh token: %v", err)
+				}
+				trimmedRefresh := strings.TrimSpace(string(refreshData))
+				if trimmedRefresh == "" {
+					log.Fatal("harvester: received empty twitch refresh token after refresh")
+				}
+				refreshMgr.SetRefreshToken(trimmedRefresh)
 			}
 		}
 
