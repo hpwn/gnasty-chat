@@ -234,6 +234,8 @@ func (c Config) Summary() Summary {
 	if c.YouTube.LiveURL != "" {
 		ytChannels = 1
 	}
+	refreshEnabled := c.Twitch.ClientID != "" && c.Twitch.ClientSecret != "" && (c.Twitch.RefreshToken != "" || c.Twitch.RefreshTokenFile != "")
+
 	summary := Summary{
 		Sinks:      append([]string(nil), c.Sinks...),
 		SQLitePath: c.Sink.SQLite.Path,
@@ -249,6 +251,7 @@ func (c Config) Summary() Summary {
 			ClientSecret:     redactString(c.Twitch.ClientSecret),
 			RefreshToken:     redactString(c.Twitch.RefreshToken),
 			RefreshTokenFile: c.Twitch.RefreshTokenFile,
+			RefreshEnabled:   refreshEnabled,
 		},
 		YouTube: YouTubeSummary{
 			Enabled:  c.YouTube.Enabled,
@@ -278,6 +281,7 @@ type TwitchSummary struct {
 	ClientSecret     string `json:"client_secret,omitempty"`
 	RefreshToken     string `json:"refresh_token,omitempty"`
 	RefreshTokenFile string `json:"refresh_token_file,omitempty"`
+	RefreshEnabled   bool   `json:"refresh_enabled"`
 }
 
 type YouTubeSummary struct {
@@ -287,6 +291,8 @@ type YouTubeSummary struct {
 }
 
 func (c Config) Redacted() map[string]any {
+	refreshEnabled := c.Twitch.ClientID != "" && c.Twitch.ClientSecret != "" && (c.Twitch.RefreshToken != "" || c.Twitch.RefreshTokenFile != "")
+
 	payload := map[string]any{
 		"sinks": append([]string(nil), c.Sinks...),
 		"sink": map[string]any{
@@ -305,6 +311,7 @@ func (c Config) Redacted() map[string]any {
 			"refresh_token":      redactString(c.Twitch.RefreshToken),
 			"refresh_token_file": c.Twitch.RefreshTokenFile,
 			"tls":                c.Twitch.TLS,
+			"refresh_enabled":    refreshEnabled,
 		},
 		"youtube": map[string]any{
 			"enabled": c.YouTube.Enabled,

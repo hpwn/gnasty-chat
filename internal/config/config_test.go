@@ -97,6 +97,9 @@ func TestRedactedSnapshot(t *testing.T) {
 	if summary.Twitch.Token != "***REDACTED*** (len=12)" {
 		t.Fatalf("expected redacted token, got %q", summary.Twitch.Token)
 	}
+	if !summary.Twitch.RefreshEnabled {
+		t.Fatalf("expected refresh enabled to be true")
+	}
 	redacted := cfg.Redacted()
 	twitchRaw := redacted["twitch"].(map[string]any)
 	if twitchRaw["client_secret"].(string) != "***REDACTED*** (len=3)" {
@@ -108,7 +111,74 @@ func TestRedactedSnapshot(t *testing.T) {
 	if twitchRaw["refresh_token"].(string) != "***REDACTED*** (len=7)" {
 		t.Fatalf("unexpected redacted refresh token: %v", twitchRaw["refresh_token"])
 	}
+	if twitchRaw["refresh_enabled"].(bool) != true {
+		t.Fatalf("expected refresh_enabled to be true, got %v", twitchRaw["refresh_enabled"])
+	}
 	if redacted["sink"].(map[string]any)["sqlite_path"].(string) != "/data/elora.db" {
 		t.Fatalf("expected sqlite path preserved in redacted snapshot")
+	}
+}
+
+func TestTwitchRefreshEnabledDerivation(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  TwitchConfig
+		want bool
+	}{
+		{
+			name: "missing client credentials",
+			cfg: TwitchConfig{
+				RefreshToken: "refresh",
+			},
+			want: false,
+		},
+		{
+			name: "client creds without refresh",
+			cfg: TwitchConfig{
+				ClientID:     "id",
+				ClientSecret: "secret",
+			},
+			want: false,
+		},
+		{
+			name: "refresh token configured",
+			cfg: TwitchConfig{
+				ClientID:     "id",
+				ClientSecret: "secret",
+				RefreshToken: "refresh",
+			},
+			want: true,
+		},
+		{
+			name: "refresh file configured",
+			cfg: TwitchConfig{
+				ClientID:         "id",
+				ClientSecret:     "secret",
+				RefreshTokenFile: "/tmp/refresh",
+			},
+			want: true,
+		},
+		{
+			name: "missing secret",
+			cfg: TwitchConfig{
+				ClientID:         "id",
+				RefreshTokenFile: "/tmp/refresh",
+			},
+			want: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Config{Twitch: tc.cfg}
+			summary := cfg.Summary()
+			if summary.Twitch.RefreshEnabled != tc.want {
+				t.Fatalf("summary refresh enabled mismatch: want %v got %v", tc.want, summary.Twitch.RefreshEnabled)
+			}
+			twitch := cfg.Redacted()["twitch"].(map[string]any)
+			if twitch["refresh_enabled"].(bool) != tc.want {
+				t.Fatalf("redacted refresh_enabled mismatch: want %v got %v", tc.want, twitch["refresh_enabled"])
+			}
+		})
 	}
 }
