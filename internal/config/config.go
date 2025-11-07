@@ -43,14 +43,16 @@ type TwitchConfig struct {
 }
 
 type YouTubeConfig struct {
-	Enabled bool
-	LiveURL string
+	Enabled      bool
+	LiveURL      string
+	RetrySeconds int
 }
 
 const (
-	defaultSQLitePath = "chat.db"
-	defaultBatchSize  = 1
-	defaultFlushMS    = 0
+	defaultSQLitePath          = "chat.db"
+	defaultBatchSize           = 1
+	defaultFlushMS             = 0
+	defaultYouTubeRetrySeconds = 30
 )
 
 func Load() Config {
@@ -132,6 +134,7 @@ func Load() Config {
 	}
 	cfg.YouTube.LiveURL = ytURL
 	cfg.YouTube.Enabled = ytURL != ""
+	cfg.YouTube.RetrySeconds = readInt("GNASTY_YT_RETRY_SECS", defaultYouTubeRetrySeconds)
 
 	if !cfg.Twitch.Enabled {
 		cfg.Twitch.Enabled = len(cfg.Twitch.Channels) > 0
@@ -254,9 +257,10 @@ func (c Config) Summary() Summary {
 			RefreshEnabled:   refreshEnabled,
 		},
 		YouTube: YouTubeSummary{
-			Enabled:  c.YouTube.Enabled,
-			Channels: ytChannels,
-			LiveURL:  c.YouTube.LiveURL,
+			Enabled:      c.YouTube.Enabled,
+			Channels:     ytChannels,
+			LiveURL:      c.YouTube.LiveURL,
+			RetrySeconds: c.YouTube.RetrySeconds,
 		},
 	}
 	return summary
@@ -285,9 +289,10 @@ type TwitchSummary struct {
 }
 
 type YouTubeSummary struct {
-	Enabled  bool   `json:"enabled"`
-	Channels int    `json:"channels"`
-	LiveURL  string `json:"live_url,omitempty"`
+	Enabled      bool   `json:"enabled"`
+	Channels     int    `json:"channels"`
+	LiveURL      string `json:"live_url,omitempty"`
+	RetrySeconds int    `json:"retry_secs,omitempty"`
 }
 
 func (c Config) Redacted() map[string]any {
@@ -321,6 +326,7 @@ func (c Config) Redacted() map[string]any {
 				}
 				return c.YouTube.LiveURL
 			}(),
+			"retry_seconds": c.YouTube.RetrySeconds,
 		},
 	}
 	return payload

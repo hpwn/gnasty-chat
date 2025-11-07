@@ -481,15 +481,92 @@ func main() {
 				}
 			}
 		}
-		client := ytlive.New(ytlive.Config{LiveURL: ytURL}, handler)
+
+		resolver := ytlive.NewResolver(nil)
+		retrySeconds := cfg.YouTube.RetrySeconds
+		if retrySeconds <= 0 {
+			retrySeconds = 30
+		}
+		retryDelay := time.Duration(retrySeconds) * time.Second
+
 		started++
 		go func() {
-			if err := client.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				log.Printf("harvester: youtube client exited: %v", err)
-				cancel()
+			var (
+				currentCancel context.CancelFunc
+				currentDone   <-chan struct{}
+				currentWatch  string
+			)
+
+			stopPoller := func() {
+				if currentCancel == nil {
+					return
+				}
+				currentCancel()
+				if currentDone != nil {
+					<-currentDone
+				}
+				currentCancel = nil
+				currentDone = nil
+				currentWatch = ""
+			}
+			defer stopPoller()
+
+			startPoller := func(watchURL string) {
+				stopPoller()
+				pollCtx, pollCancel := context.WithCancel(ctx)
+				done := make(chan struct{})
+				client := ytlive.New(ytlive.Config{LiveURL: watchURL}, handler)
+				go func() {
+					defer close(done)
+					if err := client.Run(pollCtx); err != nil && !errors.Is(err, context.Canceled) {
+						log.Printf("harvester: youtube client exited: %v", err)
+						cancel()
+					}
+				}()
+				currentCancel = pollCancel
+				currentDone = done
+				currentWatch = watchURL
+			}
+
+			for {
+				if ctx.Err() != nil {
+					return
+				}
+
+				res, err := resolver.Resolve(ctx, ytURL)
+				if err != nil {
+					log.Printf("ytlive: resolve error: %v", err)
+				} else {
+					log.Printf("ytlive: resolved watch=%s chat=%s live=%t", res.WatchURL, res.ChatURL, res.Live)
+					if !res.Live {
+						stopPoller()
+						log.Printf("ytlive: channel %s not live, backing off %s", ytURL, retryDelay)
+					} else if res.WatchURL != "" {
+						if currentWatch != res.WatchURL {
+							if currentWatch == "" {
+								log.Printf("ytlive: live stream changed to %s", res.WatchURL)
+							} else {
+								log.Printf("ytlive: live stream changed from %s to %s", currentWatch, res.WatchURL)
+							}
+							startPoller(res.WatchURL)
+						} else if currentCancel == nil {
+							startPoller(res.WatchURL)
+						}
+					} else {
+						log.Printf("ytlive: resolved live stream without watch url, backing off %s", retryDelay)
+					}
+				}
+
+				timer := time.NewTimer(retryDelay)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				case <-timer.C:
+				}
 			}
 		}()
-		log.Printf("harvester: youtube receiver started for %s", ytURL)
+		log.Printf("harvester: youtube resolver started for %s", ytURL)
 	}
 
 	if started == 0 {

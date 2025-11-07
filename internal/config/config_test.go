@@ -11,6 +11,7 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("GNASTY_SINK_SQLITE_PATH", "")
 	t.Setenv("GNASTY_SINK_BATCH_SIZE", "")
 	t.Setenv("GNASTY_SINK_FLUSH_MAX_MS", "")
+	t.Setenv("GNASTY_YT_RETRY_SECS", "")
 
 	cfg := Load()
 	if !cfg.HasSink("sqlite") {
@@ -25,6 +26,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.FlushInterval() != 0 {
 		t.Fatalf("expected zero flush interval, got %s", cfg.FlushInterval())
 	}
+	if cfg.YouTube.RetrySeconds != 30 {
+		t.Fatalf("expected default youtube retry seconds 30, got %d", cfg.YouTube.RetrySeconds)
+	}
 }
 
 func TestLoadEnvOverrides(t *testing.T) {
@@ -38,6 +42,7 @@ func TestLoadEnvOverrides(t *testing.T) {
 	t.Setenv("GNASTY_TWITCH_CLIENT_SECRET", "secret")
 	t.Setenv("GNASTY_TWITCH_TLS", "false")
 	t.Setenv("GNASTY_YT_URL", "https://example.test/watch")
+	t.Setenv("GNASTY_YT_RETRY_SECS", "45")
 
 	cfg := Load()
 	if cfg.Sink.SQLite.Path != "/data/elora.db" {
@@ -70,6 +75,9 @@ func TestLoadEnvOverrides(t *testing.T) {
 	if !cfg.YouTube.Enabled || cfg.YouTube.LiveURL == "" {
 		t.Fatalf("expected youtube enabled with URL")
 	}
+	if cfg.YouTube.RetrySeconds != 45 {
+		t.Fatalf("expected youtube retry seconds override, got %d", cfg.YouTube.RetrySeconds)
+	}
 }
 
 func TestRedactedSnapshot(t *testing.T) {
@@ -90,7 +98,7 @@ func TestRedactedSnapshot(t *testing.T) {
 			RefreshToken:     "refresh",
 			RefreshTokenFile: "/secrets/refresh",
 		},
-		YouTube: YouTubeConfig{Enabled: true, LiveURL: "https://youtube.test/watch"},
+		YouTube: YouTubeConfig{Enabled: true, LiveURL: "https://youtube.test/watch", RetrySeconds: 45},
 	}
 
 	summary := cfg.Summary()
@@ -116,6 +124,10 @@ func TestRedactedSnapshot(t *testing.T) {
 	}
 	if redacted["sink"].(map[string]any)["sqlite_path"].(string) != "/data/elora.db" {
 		t.Fatalf("expected sqlite path preserved in redacted snapshot")
+	}
+	youtubeRaw := redacted["youtube"].(map[string]any)
+	if youtubeRaw["retry_seconds"].(int) != 45 {
+		t.Fatalf("expected youtube retry seconds in redacted snapshot, got %v", youtubeRaw["retry_seconds"])
 	}
 }
 
