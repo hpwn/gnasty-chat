@@ -2,6 +2,7 @@ package ytlive
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -11,6 +12,7 @@ import (
 	"path"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // ResolveResult captures the outcome of a YouTube livestream lookup.
@@ -72,7 +74,23 @@ func (r *Resolver) Resolve(ctx context.Context, raw string) (ResolveResult, erro
 		return ResolveResult{}, err
 	}
 
-	text := decodePage(string(body))
+	rawBody := string(body)
+	if videoID, live, ok := extractInitialPlayerState(rawBody); ok {
+		if !live {
+			if watchURL == "" {
+				watchURL = canonicalWatchFromVideoID(videoID)
+			}
+			return ResolveResult{Live: false, WatchURL: watchURL}, nil
+		}
+		watchURL = canonicalWatchFromVideoID(videoID)
+		return ResolveResult{
+			Live:     true,
+			WatchURL: watchURL,
+			ChatURL:  canonicalChatFromVideoID(videoID),
+		}, nil
+	}
+
+	text := decodePage(rawBody)
 	chatURL := extractChatURL(text)
 
 	live := false
@@ -192,6 +210,176 @@ func defaultChatURL(u *url.URL) string {
 		return ""
 	}
 	videoID := strings.TrimSpace(u.Query().Get("v"))
+	if videoID == "" {
+		return ""
+	}
+	values := url.Values{"v": []string{videoID}}
+	return (&url.URL{Scheme: "https", Host: "www.youtube.com", Path: "/live_chat", RawQuery: values.Encode()}).String()
+}
+
+func extractInitialPlayerState(body string) (string, bool, bool) {
+	markers := []string{"ytInitialPlayerResponse", "ytInitialData"}
+	for _, marker := range markers {
+		raw, ok := extractJSONAssignment(body, marker)
+		if !ok {
+			continue
+		}
+		videoID, live, hasVideo, err := parseInitialPlayerJSON(raw)
+		if err != nil {
+			continue
+		}
+		if !hasVideo {
+			continue
+		}
+		return videoID, live, true
+	}
+	return "", false, false
+}
+
+func extractJSONAssignment(body, marker string) (string, bool) {
+	search := 0
+	for {
+		idx := strings.Index(body[search:], marker)
+		if idx == -1 {
+			return "", false
+		}
+		idx += search
+		pos := idx + len(marker)
+		for pos < len(body) {
+			ch := body[pos]
+			if ch == '=' {
+				pos++
+				break
+			}
+			if unicode.IsSpace(rune(ch)) || ch == ']' || ch == '"' || ch == '\'' || ch == '.' || ch == ')' {
+				pos++
+				continue
+			}
+			pos = -1
+			break
+		}
+		if pos == -1 || pos >= len(body) {
+			search = idx + len(marker)
+			continue
+		}
+		for pos < len(body) && unicode.IsSpace(rune(body[pos])) {
+			pos++
+		}
+		if pos >= len(body) {
+			return "", false
+		}
+		if body[pos] != '{' && body[pos] != '[' {
+			search = idx + len(marker)
+			continue
+		}
+		jsonSlice, ok := sliceBalancedJSON(body[pos:])
+		if !ok {
+			search = idx + len(marker)
+			continue
+		}
+		return jsonSlice, true
+	}
+}
+
+func sliceBalancedJSON(s string) (string, bool) {
+	if s == "" {
+		return "", false
+	}
+	stack := make([]rune, 0, 8)
+	inString := false
+	escape := false
+	for i, r := range s {
+		if inString {
+			if escape {
+				escape = false
+				continue
+			}
+			if r == '\\' {
+				escape = true
+				continue
+			}
+			if r == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch r {
+		case '"':
+			inString = true
+		case '{', '[':
+			stack = append(stack, r)
+		case '}', ']':
+			if len(stack) == 0 {
+				return "", false
+			}
+			open := stack[len(stack)-1]
+			if (open == '{' && r != '}') || (open == '[' && r != ']') {
+				return "", false
+			}
+			stack = stack[:len(stack)-1]
+			if len(stack) == 0 {
+				return s[:i+1], true
+			}
+		}
+	}
+	return "", false
+}
+
+type playerResponsePayload struct {
+	StreamingData *struct {
+		Formats         []json.RawMessage `json:"formats"`
+		AdaptiveFormats []json.RawMessage `json:"adaptiveFormats"`
+		HLSManifestURL  string            `json:"hlsManifestUrl"`
+		DashManifestURL string            `json:"dashManifestUrl"`
+	} `json:"streamingData"`
+	VideoDetails struct {
+		VideoID       string `json:"videoId"`
+		IsLive        bool   `json:"isLive"`
+		IsLiveContent bool   `json:"isLiveContent"`
+	} `json:"videoDetails"`
+}
+
+func parseInitialPlayerJSON(raw string) (string, bool, bool, error) {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &root); err != nil {
+		return "", false, false, err
+	}
+
+	payload := playerResponsePayload{}
+	if nested, ok := root["playerResponse"]; ok {
+		if err := json.Unmarshal(nested, &payload); err != nil {
+			return "", false, false, err
+		}
+	} else {
+		if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+			return "", false, false, err
+		}
+	}
+
+	videoID := strings.TrimSpace(payload.VideoDetails.VideoID)
+	if videoID == "" {
+		return "", false, false, nil
+	}
+
+	live := payload.VideoDetails.IsLiveContent || payload.VideoDetails.IsLive
+	if !live && payload.StreamingData != nil {
+		live = true
+	}
+
+	return videoID, live, true, nil
+}
+
+func canonicalWatchFromVideoID(videoID string) string {
+	videoID = strings.TrimSpace(videoID)
+	if videoID == "" {
+		return ""
+	}
+	values := url.Values{"v": []string{videoID}}
+	return (&url.URL{Scheme: "https", Host: "www.youtube.com", Path: "/watch", RawQuery: values.Encode()}).String()
+}
+
+func canonicalChatFromVideoID(videoID string) string {
+	videoID = strings.TrimSpace(videoID)
 	if videoID == "" {
 		return ""
 	}

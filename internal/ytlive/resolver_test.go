@@ -44,7 +44,7 @@ func TestResolver_HandleLive(t *testing.T) {
 			t.Fatalf("unexpected query: %s", r.URL.RawQuery)
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`"isLiveNow":true,"liveChatRenderer":{"endpoint":{"commandMetadata":{"webCommandMetadata":{"url":"/live_chat?continuation=xyz"}}}}`))
+		w.Write([]byte(`<!DOCTYPE html><html><head><script nonce="test">var ytInitialPlayerResponse = {"streamingData":{"hlsManifestUrl":"https://example.com/hls.m3u8"},"videoDetails":{"videoId":"abc123","isLiveContent":true}};</script></head><body></body></html>`))
 	})
 
 	server := httptest.NewServer(handler)
@@ -65,7 +65,7 @@ func TestResolver_HandleLive(t *testing.T) {
 	if res.WatchURL != "https://www.youtube.com/watch?v=abc123" {
 		t.Fatalf("Resolve() WatchURL = %q", res.WatchURL)
 	}
-	if res.ChatURL != "https://www.youtube.com/live_chat?continuation=xyz" {
+	if res.ChatURL != "https://www.youtube.com/live_chat?v=abc123" {
 		t.Fatalf("Resolve() ChatURL = %q", res.ChatURL)
 	}
 }
@@ -74,7 +74,7 @@ func TestResolver_HandleOffline(t *testing.T) {
 	handler := http.NewServeMux()
 	handler.HandleFunc("/@creator/live", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`"isLiveNow":false`))
+		w.Write([]byte(`<!DOCTYPE html><html><head><script>var ytInitialPlayerResponse = {"videoDetails":{"videoId":"offline123","isLiveContent":false}};</script></head><body></body></html>`))
 	})
 
 	server := httptest.NewServer(handler)
@@ -92,8 +92,8 @@ func TestResolver_HandleOffline(t *testing.T) {
 	if res.Live {
 		t.Fatalf("Resolve() Live = true, want false")
 	}
-	if res.WatchURL != "" {
-		t.Fatalf("Resolve() WatchURL = %q, want empty", res.WatchURL)
+	if res.WatchURL != "https://www.youtube.com/watch?v=offline123" {
+		t.Fatalf("Resolve() WatchURL = %q", res.WatchURL)
 	}
 	if res.ChatURL != "" {
 		t.Fatalf("Resolve() ChatURL = %q, want empty", res.ChatURL)
@@ -107,7 +107,7 @@ func TestResolver_DirectWatch(t *testing.T) {
 			t.Fatalf("unexpected query: %s", r.URL.RawQuery)
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`"isLive":true`))
+		w.Write([]byte(`<!DOCTYPE html><html><head><script>var ytInitialData = {"playerResponse":{"streamingData":{"dashManifestUrl":"https://example.com/manifest.mpd"},"videoDetails":{"videoId":"def456","isLiveContent":true}}};</script></head><body></body></html>`))
 	})
 
 	server := httptest.NewServer(handler)
