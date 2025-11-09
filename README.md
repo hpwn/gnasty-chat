@@ -132,7 +132,7 @@ rotate `/data/twitch_irc.pass` as long as the refresh flow is configured.
 
 ```bash
 ./harvester \
-  -sqlite ./elora.db \
+  -sqlite /data/gnasty.db \
   -twitch-channel rifftrax -twitch-nick hp_az -twitch-token-file /run/secrets/twitch_token -twitch-tls=true \
   -youtube-url 'https://youtube.com/@yourchannel/live' \
   -http-addr :8765 \
@@ -140,6 +140,11 @@ rotate `/data/twitch_irc.pass` as long as the refresh flow is configured.
   -http-rate-rps 20 -http-rate-burst 40 \
   -http-metrics=true -http-access-log=true
 ```
+
+In the docker-compose setup we bind-mount `./data:/data` for both services. gnasty-chat writes
+`/data/gnasty.db` by default while elora-chat continues to write `/data/elora.db`. If you prefer the
+legacy single-database flow, point gnasty at `/data/elora.db` instead so both services share the same
+file.
 
 When `GNASTY_YT_URL` (or `-youtube-url`) is set the resolver accepts both the
 legacy direct watch link (`https://www.youtube.com/watch?v=...`) and the modern
