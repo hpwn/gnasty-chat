@@ -29,6 +29,10 @@ type Client struct {
 	http    *http.Client
 }
 
+const (
+	defaultLivePollDelay = 10 * time.Second
+)
+
 func New(cfg Config, handler Handler) *Client {
 	httpClient := &http.Client{Timeout: 15 * time.Second}
 	return &Client{
@@ -90,7 +94,7 @@ func (c *Client) Run(ctx context.Context) error {
 			}
 		}
 
-		messages, nextContinuation, timeout, err := c.poll(ctx, apiKey, clientVersion, continuation)
+		messages, nextContinuation, timeoutMs, hasTimeout, err := c.poll(ctx, apiKey, clientVersion, continuation)
 		if err != nil {
 			log.Printf("ytlive: poll error: %v", err)
 			if !sleepContext(ctx, backoff) {
@@ -124,10 +128,13 @@ func (c *Client) Run(ctx context.Context) error {
 			apiKey, clientVersion, continuation = "", "", ""
 		}
 
-		if timeout <= 0 {
-			timeout = 1500
+		delay, fromContinuation := nextLivePollDelay(timeoutMs, hasTimeout)
+		if fromContinuation {
+			log.Printf("ytlive: next poll in %dms (from continuation)", delay.Milliseconds())
+		} else {
+			log.Printf("ytlive: next poll in %dms (fallback)", delay.Milliseconds())
 		}
-		if !sleepContext(ctx, time.Duration(timeout)*time.Millisecond) {
+		if !sleepContext(ctx, delay) {
 			return ctx.Err()
 		}
 	}
@@ -194,7 +201,7 @@ func (c *Client) bootstrap(ctx context.Context, liveURL string) (apiKey, clientV
 	return apiKey, clientVersion, continuation, nil
 }
 
-func (c *Client) poll(ctx context.Context, apiKey, clientVersion, continuation string) ([]core.ChatMessage, string, int, error) {
+func (c *Client) poll(ctx context.Context, apiKey, clientVersion, continuation string) ([]core.ChatMessage, string, int, bool, error) {
 	endpoint := fmt.Sprintf("https://www.youtube.com/youtubei/v1/live_chat/get_live_chat?key=%s", url.QueryEscape(apiKey))
 
 	payload := map[string]any{
@@ -210,49 +217,50 @@ func (c *Client) poll(ctx context.Context, apiKey, clientVersion, continuation s
 
 	buf, err := json.Marshal(payload)
 	if err != nil {
-		return nil, continuation, 1500, err
+		return nil, continuation, 0, false, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(buf))
 	if err != nil {
-		return nil, continuation, 1500, err
+		return nil, continuation, 0, false, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; ytlive-harvester/1.0)")
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, continuation, 1500, err
+		return nil, continuation, 0, false, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
-		return nil, continuation, 1500, fmt.Errorf("ytlive: poll status %s: %s", resp.Status, strings.TrimSpace(string(body)))
+		return nil, continuation, 0, false, fmt.Errorf("ytlive: poll status %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		return nil, continuation, 1500, err
+		return nil, continuation, 0, false, err
 	}
 
 	var payloadResp map[string]any
 	if err := json.Unmarshal(body, &payloadResp); err != nil {
-		return nil, continuation, 1500, fmt.Errorf("ytlive: decode poll response: %w", err)
+		return nil, continuation, 0, false, fmt.Errorf("ytlive: decode poll response: %w", err)
 	}
 
-	continuation, timeout := extractContinuation(payloadResp)
+	continuation, timeout, hasTimeout := extractContinuation(payloadResp)
 	messages := extractMessages(payloadResp)
-	return messages, continuation, timeout, nil
+	return messages, continuation, timeout, hasTimeout, nil
 }
 
-func extractContinuation(payload map[string]any) (string, int) {
+func extractContinuation(payload map[string]any) (string, int, bool) {
 	cont := ""
 	timeout := 0
+	hasTimeout := false
 
 	var walk func(any)
 	walk = func(v any) {
-		if cont != "" && timeout > 0 {
+		if cont != "" && hasTimeout {
 			// still walk to capture better timeout or continuation if missing
 		}
 		switch val := v.(type) {
@@ -272,9 +280,22 @@ func extractContinuation(payload map[string]any) (string, int) {
 					}
 				}
 			}
-			if timeout == 0 {
-				if tm, ok := val["timeoutMs"].(float64); ok && tm > 0 {
-					timeout = int(tm)
+			if !hasTimeout {
+				switch tm := val["timeoutMs"].(type) {
+				case float64:
+					if tm > 0 {
+						timeout = int(tm)
+						hasTimeout = true
+					}
+				case string:
+					tm = strings.TrimSpace(tm)
+					if tm == "" {
+						break
+					}
+					if n, err := strconv.Atoi(tm); err == nil && n > 0 {
+						timeout = n
+						hasTimeout = true
+					}
 				}
 			}
 			for _, child := range val {
@@ -288,7 +309,7 @@ func extractContinuation(payload map[string]any) (string, int) {
 	}
 
 	walk(payload)
-	return cont, timeout
+	return cont, timeout, hasTimeout
 }
 
 func extractMessages(payload map[string]any) []core.ChatMessage {
@@ -547,6 +568,13 @@ func continuationFromNode(node map[string]any) string {
 		}
 	}
 	return ""
+}
+
+func nextLivePollDelay(timeoutMs int, hasTimeout bool) (time.Duration, bool) {
+	if hasTimeout && timeoutMs > 0 {
+		return time.Duration(timeoutMs) * time.Millisecond, true
+	}
+	return defaultLivePollDelay, false
 }
 
 func sleepContext(ctx context.Context, d time.Duration) bool {
