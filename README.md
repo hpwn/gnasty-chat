@@ -132,13 +132,36 @@ rotate `/data/twitch_irc.pass` as long as the refresh flow is configured.
 
 ```bash
 ./harvester \
-  -sqlite ./elora.db \
+  -sqlite /data/gnasty.db \
   -twitch-channel rifftrax -twitch-nick hp_az -twitch-token-file /run/secrets/twitch_token -twitch-tls=true \
-  -youtube-url 'https://www.youtube.com/watch?v=jfKfPfyJRdk' \
+  -youtube-url 'https://youtube.com/@yourchannel/live' \
   -http-addr :8765 \
   -http-cors-origins 'http://localhost:5173' \
   -http-rate-rps 20 -http-rate-burst 40 \
   -http-metrics=true -http-access-log=true
+```
+
+In the docker-compose setup we bind-mount `./data:/data` for both services. gnasty-chat writes
+`/data/gnasty.db` by default while elora-chat continues to write `/data/elora.db`. If you prefer the
+legacy single-database flow, point gnasty at `/data/elora.db` instead so both services share the same
+file.
+
+When `GNASTY_YT_URL` (or `-youtube-url`) is set the resolver accepts both the
+legacy direct watch link (`https://www.youtube.com/watch?v=...`) and the modern
+channel handle form (`https://youtube.com/@creator/live`). Handles are
+automatically normalized to their live endpoint before the resolver polls the
+page, which keeps links short and resilient to vanity domain changes.
+
+The YouTube poller continuously re-resolves the configured URL every
+`GNASTY_YT_RETRY_SECS` (default 30 seconds). When the channel is offline gnasty
+logs the backoff and waits for the next retry; when a new broadcast starts the
+harvester tears down the old poller (if any) and attaches to the latest live
+watch URL automatically. Typical log lines look like:
+
+```
+ytlive: resolved watch=https://www.youtube.com/watch?v=abc123 chat=https://www.youtube.com/live_chat?v=abc123 live=true
+ytlive: live stream changed to https://www.youtube.com/watch?v=abc123
+ytlive: channel https://youtube.com/@yourchannel/live not live, backing off 30s
 ```
 
 Additional HTTP controls:

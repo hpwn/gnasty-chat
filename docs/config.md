@@ -11,7 +11,7 @@ plain text; instead they are replaced with `***REDACTED*** (len=N)` to show the 
 | --- | --- | --- | --- | --- |
 | `GNASTY_SINKS` | string list (comma/space separated) | `sqlite` | `sqlite` | Logged verbatim |
 | `GNASTY_RECEIVERS` | string list | _(alias for `GNASTY_SINKS` when that variable is unset)_ | `sqlite` | Logged verbatim |
-| `GNASTY_SINK_SQLITE_PATH` | filesystem path | `chat.db` | `/data/elora.db` | Logged verbatim |
+| `GNASTY_SINK_SQLITE_PATH` | filesystem path | `chat.db` | `/data/gnasty.db` | Logged verbatim |
 | `GNASTY_SINK_BATCH_SIZE` | integer (>0) | `1` | `50` | Logged verbatim |
 | `GNASTY_SINK_FLUSH_MAX_MS` | integer milliseconds (>=0) | `0` | `250` | Logged verbatim |
 | `GNASTY_TWITCH_ENABLED` | boolean | `false` (auto-enabled when channels configured) | `true` | Logged verbatim |
@@ -33,18 +33,28 @@ plain text; instead they are replaced with `***REDACTED*** (len=N)` to show the 
 | `TWITCH_REFRESH_TOKEN` | string | _(empty)_ | `refresh-xxxx` | Redacted |
 | `TWITCH_REFRESH_TOKEN_FILE` | filesystem path | _(empty)_ | `/secrets/twitch_refresh` | Logged verbatim |
 | `TWITCH_TLS` | boolean | Inherits `true` | `false` | Logged verbatim |
-| `GNASTY_YT_URL` | string URL | _(empty)_ | `https://www.youtube.com/watch?v=jfKfPfyJRdk` | Logged verbatim |
-| `YOUTUBE_URL` | string URL | _(empty)_ | `https://www.youtube.com/watch?v=jfKfPfyJRdk` | Logged verbatim |
+| `GNASTY_YT_URL` | string URL | _(empty)_ | `https://youtube.com/@yourchannel/live` | Logged verbatim |
+| `GNASTY_YT_RETRY_SECS` | integer seconds (>0) | `30` | `45` | Logged verbatim |
+| `YOUTUBE_URL` | string URL | _(empty)_ | `https://www.youtube.com/watch?v=jfKfPfyJRdk` (also accepts `https://youtube.com/@yourchannel/live`) | Logged verbatim |
 
 Values listed as "Redacted" are replaced with `***REDACTED*** (len=N)` in logs and the `/configz`
 endpoint. All other values are emitted verbatim.
 
+`GNASTY_YT_URL` accepts both the classic watch URL
+(`https://www.youtube.com/watch?v=...`) and the shorter channel handle form
+(`https://youtube.com/@creator/live`). The resolver normalizes handles to their
+live endpoint automatically before polling YouTube, so you can swap between the
+two without redeploying. When the channel is offline the harvester logs that the
+stream is unavailable, backs off for `GNASTY_YT_RETRY_SECS` (30 seconds by
+default), and retries the lookup until a new broadcast appears.
+
 ## SQLite storage
 
 When the SQLite sink is enabled (`sqlite` listed in `GNASTY_SINKS`), gnasty-chat writes to the path
-configured via `GNASTY_SINK_SQLITE_PATH`. In containerised deployments it must share the same named
-volume as `elora-chat` (for example `elora_data:/data`) so that both services interact with the same
-`elora.db` file.
+configured via `GNASTY_SINK_SQLITE_PATH`. The docker-compose layout bind-mounts `./data:/data` for both
+services; gnasty-chat defaults to `/data/gnasty.db` while elora-chat writes `/data/elora.db`. Operators
+who prefer the legacy single-database ingestion can still point gnasty at `/data/elora.db` so both
+applications share the same file.
 
 Batching behaviour is controlled via `GNASTY_SINK_BATCH_SIZE` and `GNASTY_SINK_FLUSH_MAX_MS`. The
 process writes immediately when the batch size is reached or when the flush interval elapses,
