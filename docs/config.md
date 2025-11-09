@@ -33,11 +33,20 @@ plain text; instead they are replaced with `***REDACTED*** (len=N)` to show the 
 | `TWITCH_REFRESH_TOKEN` | string | _(empty)_ | `refresh-xxxx` | Redacted |
 | `TWITCH_REFRESH_TOKEN_FILE` | filesystem path | _(empty)_ | `/secrets/twitch_refresh` | Logged verbatim |
 | `TWITCH_TLS` | boolean | Inherits `true` | `false` | Logged verbatim |
-| `GNASTY_YT_URL` | string URL | _(empty)_ | `https://www.youtube.com/watch?v=jfKfPfyJRdk` | Logged verbatim |
-| `YOUTUBE_URL` | string URL | _(empty)_ | `https://www.youtube.com/watch?v=jfKfPfyJRdk` | Logged verbatim |
+| `GNASTY_YT_URL` | string URL | _(empty)_ | `https://youtube.com/@yourchannel/live` | Logged verbatim |
+| `GNASTY_YT_RETRY_SECS` | integer seconds (>0) | `30` | `45` | Logged verbatim |
+| `YOUTUBE_URL` | string URL | _(empty)_ | `https://www.youtube.com/watch?v=jfKfPfyJRdk` (also accepts `https://youtube.com/@yourchannel/live`) | Logged verbatim |
 
 Values listed as "Redacted" are replaced with `***REDACTED*** (len=N)` in logs and the `/configz`
 endpoint. All other values are emitted verbatim.
+
+`GNASTY_YT_URL` accepts both the classic watch URL
+(`https://www.youtube.com/watch?v=...`) and the shorter channel handle form
+(`https://youtube.com/@creator/live`). The resolver normalizes handles to their
+live endpoint automatically before polling YouTube, so you can swap between the
+two without redeploying. When the channel is offline the harvester logs that the
+stream is unavailable, backs off for `GNASTY_YT_RETRY_SECS` (30 seconds by
+default), and retries the lookup until a new broadcast appears.
 
 ## SQLite storage
 
