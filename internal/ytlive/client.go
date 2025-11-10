@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -249,7 +250,11 @@ func (c *Client) poll(ctx context.Context, apiKey, clientVersion, continuation s
 	}
 
 	continuation, timeout, hasTimeout := extractContinuation(payloadResp)
-	messages := extractMessages(payloadResp)
+	messages, summary, failures, nonChats := extractMessages(payloadResp)
+
+	dumpRaw := os.Getenv("GNASTY_YT_DUMP_UNHANDLED") != ""
+	logPollResults(summary, failures, nonChats, dumpRaw)
+
 	return messages, continuation, timeout, hasTimeout, nil
 }
 
@@ -312,37 +317,66 @@ func extractContinuation(payload map[string]any) (string, int, bool) {
 	return cont, timeout, hasTimeout
 }
 
-func extractMessages(payload map[string]any) []core.ChatMessage {
-	var messages []core.ChatMessage
+type pollSummary struct {
+	actions      int
+	chatMessages int
+	stored       int
+	skipped      int
+}
+
+type chatFailure struct {
+	id     string
+	reason string
+}
+
+type nonChatAction struct {
+	actionType string
+	key        string
+	raw        map[string]any
+}
+
+func extractMessages(payload map[string]any) ([]core.ChatMessage, pollSummary, []chatFailure, []nonChatAction) {
 	actions := gatherActions(payload)
+	summary := pollSummary{actions: len(actions)}
+
+	var (
+		messages []core.ChatMessage
+		failures []chatFailure
+		nonChats []nonChatAction
+	)
+
 	for _, action := range actions {
-		if renderer := digMap(action, "addChatItemAction", "item", "liveChatTextMessageRenderer"); renderer != nil {
-			if msg, ok := buildMessage(renderer); ok {
-				messages = append(messages, msg)
-			}
+		renderers := collectTextRenderers(action)
+		if len(renderers) == 0 {
+			nonChats = append(nonChats, nonChatAction{
+				actionType: detectActionType(action),
+				key:        shortActionID(action),
+				raw:        action,
+			})
+			continue
 		}
-		if appendAction := digMap(action, "appendContinuationItemsAction"); appendAction != nil {
-			if items, ok := appendAction["continuationItems"].([]any); ok {
-				for _, item := range items {
-					itemMap, ok := item.(map[string]any)
-					if !ok {
-						continue
-					}
-					if renderer, ok := itemMap["liveChatTextMessageRenderer"].(map[string]any); ok {
-						if msg, ok := buildMessage(renderer); ok {
-							messages = append(messages, msg)
-						}
-					}
-					if renderer := digMap(itemMap, "addChatItemAction", "item", "liveChatTextMessageRenderer"); renderer != nil {
-						if msg, ok := buildMessage(renderer); ok {
-							messages = append(messages, msg)
-						}
-					}
-				}
+
+		summary.chatMessages += len(renderers)
+		for _, renderer := range renderers {
+			if msg, ok, reason := buildMessage(renderer); ok {
+				messages = append(messages, msg)
+				continue
+			} else {
+				failures = append(failures, chatFailure{
+					id:     shortActionID(renderer),
+					reason: reason,
+				})
 			}
 		}
 	}
-	return messages
+
+	summary.stored = len(messages)
+	summary.skipped = summary.actions - summary.chatMessages
+	if summary.skipped < 0 {
+		summary.skipped = 0
+	}
+
+	return messages, summary, failures, nonChats
 }
 
 func gatherActions(payload map[string]any) []map[string]any {
@@ -368,7 +402,125 @@ func gatherActions(payload map[string]any) []map[string]any {
 	return out
 }
 
-func buildMessage(renderer map[string]any) (core.ChatMessage, bool) {
+func collectTextRenderers(action map[string]any) []map[string]any {
+	var renderers []map[string]any
+	keys := []string{"liveChatTextMessageRenderer", "liveChatLegacyTextMessageRenderer"}
+
+	var walk func(any)
+	walk = func(v any) {
+		switch val := v.(type) {
+		case map[string]any:
+			for _, key := range keys {
+				if renderer, ok := val[key].(map[string]any); ok {
+					renderers = append(renderers, renderer)
+				}
+			}
+			for _, child := range val {
+				walk(child)
+			}
+		case []any:
+			for _, child := range val {
+				walk(child)
+			}
+		}
+	}
+
+	walk(action)
+	return renderers
+}
+
+func detectActionType(action map[string]any) string {
+	known := []string{
+		"addChatItemAction",
+		"addLiveChatTickerItemAction",
+		"addLiveChatTickerHeaderAction",
+		"addLiveChatItemAction",
+		"markChatItemAsDeletedAction",
+		"markChatItemsByAuthorAsDeletedAction",
+		"liveChatItemListRenderer",
+		"addLiveChatWarningMessageAction",
+		"showLiveChatActionPanelAction",
+		"showLiveChatTooltipAction",
+		"updateLiveChatPollAction",
+		"addLiveChatPollAction",
+	}
+	for _, key := range known {
+		if _, ok := action[key]; ok {
+			return key
+		}
+	}
+	for key := range action {
+		return key
+	}
+	return "unknown"
+}
+
+func shortActionID(v any) string {
+	id := findStringRecursive(v, []string{"id", "key", "clientMessageId", "actionId"})
+	if id == "" {
+		return "unknown"
+	}
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
+}
+
+func findStringRecursive(v any, keys []string) string {
+	switch val := v.(type) {
+	case map[string]any:
+		for _, key := range keys {
+			if s, ok := val[key].(string); ok && strings.TrimSpace(s) != "" {
+				return s
+			}
+		}
+		for _, child := range val {
+			if s := findStringRecursive(child, keys); s != "" {
+				return s
+			}
+		}
+	case []any:
+		for _, child := range val {
+			if s := findStringRecursive(child, keys); s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+func logPollResults(summary pollSummary, failures []chatFailure, nonChats []nonChatAction, dumpRaw bool) {
+	log.Printf("ytlive: poll summary actions=%d chat_messages=%d stored=%d skipped=%d", summary.actions, summary.chatMessages, summary.stored, summary.skipped)
+	if summary.chatMessages != summary.stored {
+		for _, failure := range failures {
+			log.Printf("ytlive: warning dropped chat message id=%s reason=%s", failure.id, failure.reason)
+		}
+	}
+	for _, action := range nonChats {
+		log.Printf("ytlive: skipped non-chat action type=%s key=%s", action.actionType, action.key)
+		if dumpRaw {
+			if raw := marshalTruncated(action.raw, 512); raw != "" {
+				log.Printf("ytlive: unhandled action dump %s", raw)
+			}
+		}
+	}
+}
+
+func marshalTruncated(v map[string]any, limit int) string {
+	if v == nil {
+		return ""
+	}
+	data, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	if len(data) > limit {
+		data = data[:limit]
+	}
+	return string(data)
+}
+
+func buildMessage(renderer map[string]any) (core.ChatMessage, bool, string) {
 	msg := core.ChatMessage{
 		ID:            stringField(renderer, "id"),
 		PlatformMsgID: stringField(renderer, "id"),
@@ -377,7 +529,7 @@ func buildMessage(renderer map[string]any) (core.ChatMessage, bool) {
 		Text:          textField(renderer, "message"),
 	}
 	if msg.Text == "" {
-		return core.ChatMessage{}, false
+		return core.ChatMessage{}, false, "empty text"
 	}
 	if msg.ID == "" {
 		msg.ID = fmt.Sprintf("yt-%d", time.Now().UnixNano())
@@ -386,7 +538,7 @@ func buildMessage(renderer map[string]any) (core.ChatMessage, bool) {
 		msg.PlatformMsgID = msg.ID
 	}
 	msg.Ts = timestampField(renderer, "timestampUsec")
-	return msg, true
+	return msg, true, ""
 }
 
 func stringField(m map[string]any, key string) string {
