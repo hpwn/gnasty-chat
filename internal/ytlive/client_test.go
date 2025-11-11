@@ -3,7 +3,6 @@ package ytlive
 import (
 	"bytes"
 	"log"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -32,7 +31,7 @@ func TestExtractContinuationTimeout(t *testing.T) {
 	if !hasTimeout {
 		t.Fatalf("expected to detect timeout")
 	}
-	delay, used := nextLivePollDelay(timeout, hasTimeout)
+	delay, used := nextLivePollDelay(timeout, hasTimeout, defaultLivePollDelay)
 	if !used {
 		t.Fatalf("expected delay to come from continuation")
 	}
@@ -63,7 +62,7 @@ func TestExtractContinuationTimeoutFallback(t *testing.T) {
 	if hasTimeout {
 		t.Fatalf("expected no timeout value")
 	}
-	delay, used := nextLivePollDelay(timeout, hasTimeout)
+	delay, used := nextLivePollDelay(timeout, hasTimeout, defaultLivePollDelay)
 	if used {
 		t.Fatalf("expected to fall back to default delay")
 	}
@@ -155,16 +154,12 @@ func TestExtractMessagesAndLogging(t *testing.T) {
 		t.Fatalf("expected 2 non-chat actions, got %d", len(nonChats))
 	}
 
-	prevEnv := os.Getenv("GNASTY_YT_DUMP_UNHANDLED")
-	defer os.Setenv("GNASTY_YT_DUMP_UNHANDLED", prevEnv)
-
 	var buf bytes.Buffer
 	originalWriter := log.Writer()
 	log.SetOutput(&buf)
 	defer log.SetOutput(originalWriter)
 
-	os.Unsetenv("GNASTY_YT_DUMP_UNHANDLED")
-	logPollResults(summary, failures, nonChats, os.Getenv("GNASTY_YT_DUMP_UNHANDLED") != "")
+	logPollResults(summary, failures, nonChats, false)
 	output := buf.String()
 	if !strings.Contains(output, "ytlive: poll summary actions=5 chat_messages=3 stored=3 skipped=2") {
 		t.Fatalf("missing poll summary log, got %q", output)
@@ -177,8 +172,7 @@ func TestExtractMessagesAndLogging(t *testing.T) {
 	}
 
 	buf.Reset()
-	os.Setenv("GNASTY_YT_DUMP_UNHANDLED", "1")
-	logPollResults(summary, failures, nonChats, os.Getenv("GNASTY_YT_DUMP_UNHANDLED") != "")
+	logPollResults(summary, failures, nonChats, true)
 	output = buf.String()
 	if !strings.Contains(output, "unhandled action dump") {
 		t.Fatalf("expected dump with env set, got %q", output)

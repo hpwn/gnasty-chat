@@ -12,6 +12,9 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("GNASTY_SINK_BATCH_SIZE", "")
 	t.Setenv("GNASTY_SINK_FLUSH_MAX_MS", "")
 	t.Setenv("GNASTY_YT_RETRY_SECS", "")
+	t.Setenv("GNASTY_YT_DUMP_UNHANDLED", "")
+	t.Setenv("GNASTY_YT_POLL_TIMEOUT_SECS", "")
+	t.Setenv("GNASTY_YT_POLL_INTERVAL_MS", "")
 
 	cfg := Load()
 	if !cfg.HasSink("sqlite") {
@@ -29,6 +32,15 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.YouTube.RetrySeconds != 30 {
 		t.Fatalf("expected default youtube retry seconds 30, got %d", cfg.YouTube.RetrySeconds)
 	}
+	if cfg.YouTube.DumpUnhandled {
+		t.Fatalf("expected youtube dump unhandled default false")
+	}
+	if cfg.YouTube.PollTimeoutSecs != 15 {
+		t.Fatalf("expected youtube poll timeout default 15, got %d", cfg.YouTube.PollTimeoutSecs)
+	}
+	if cfg.YouTube.PollIntervalMS != 10000 {
+		t.Fatalf("expected youtube poll interval default 10000, got %d", cfg.YouTube.PollIntervalMS)
+	}
 }
 
 func TestLoadEnvOverrides(t *testing.T) {
@@ -43,6 +55,9 @@ func TestLoadEnvOverrides(t *testing.T) {
 	t.Setenv("GNASTY_TWITCH_TLS", "false")
 	t.Setenv("GNASTY_YT_URL", "https://example.test/watch")
 	t.Setenv("GNASTY_YT_RETRY_SECS", "45")
+	t.Setenv("GNASTY_YT_DUMP_UNHANDLED", "true")
+	t.Setenv("GNASTY_YT_POLL_TIMEOUT_SECS", "60")
+	t.Setenv("GNASTY_YT_POLL_INTERVAL_MS", "1500")
 
 	cfg := Load()
 	if cfg.Sink.SQLite.Path != "/data/elora.db" {
@@ -78,6 +93,15 @@ func TestLoadEnvOverrides(t *testing.T) {
 	if cfg.YouTube.RetrySeconds != 45 {
 		t.Fatalf("expected youtube retry seconds override, got %d", cfg.YouTube.RetrySeconds)
 	}
+	if !cfg.YouTube.DumpUnhandled {
+		t.Fatalf("expected youtube dump unhandled override")
+	}
+	if cfg.YouTube.PollTimeoutSecs != 60 {
+		t.Fatalf("expected youtube poll timeout override 60, got %d", cfg.YouTube.PollTimeoutSecs)
+	}
+	if cfg.YouTube.PollIntervalMS != 1500 {
+		t.Fatalf("expected youtube poll interval override 1500, got %d", cfg.YouTube.PollIntervalMS)
+	}
 }
 
 func TestRedactedSnapshot(t *testing.T) {
@@ -98,7 +122,7 @@ func TestRedactedSnapshot(t *testing.T) {
 			RefreshToken:     "refresh",
 			RefreshTokenFile: "/secrets/refresh",
 		},
-		YouTube: YouTubeConfig{Enabled: true, LiveURL: "https://youtube.test/watch", RetrySeconds: 45},
+		YouTube: YouTubeConfig{Enabled: true, LiveURL: "https://youtube.test/watch", RetrySeconds: 45, DumpUnhandled: true, PollTimeoutSecs: 30, PollIntervalMS: 7500},
 	}
 
 	summary := cfg.Summary()
@@ -128,6 +152,29 @@ func TestRedactedSnapshot(t *testing.T) {
 	youtubeRaw := redacted["youtube"].(map[string]any)
 	if youtubeRaw["retry_seconds"].(int) != 45 {
 		t.Fatalf("expected youtube retry seconds in redacted snapshot, got %v", youtubeRaw["retry_seconds"])
+	}
+	if youtubeRaw["dump_unhandled"].(bool) != true {
+		t.Fatalf("expected youtube dump_unhandled true in redacted snapshot")
+	}
+	if youtubeRaw["poll_timeout_secs"].(int) != 30 {
+		t.Fatalf("expected youtube poll_timeout_secs 30 in redacted snapshot, got %v", youtubeRaw["poll_timeout_secs"])
+	}
+	if youtubeRaw["poll_interval_ms"].(int) != 7500 {
+		t.Fatalf("expected youtube poll_interval_ms 7500 in redacted snapshot, got %v", youtubeRaw["poll_interval_ms"])
+	}
+}
+
+func TestYouTubePollBoolOverrides(t *testing.T) {
+	t.Setenv("GNASTY_YT_URL", "https://example.test/watch")
+	t.Setenv("GNASTY_YT_POLL_TIMEOUT_SECS", "false")
+	t.Setenv("GNASTY_YT_POLL_INTERVAL_MS", "0")
+
+	cfg := Load()
+	if cfg.YouTube.PollTimeoutSecs != 0 {
+		t.Fatalf("expected poll timeout disabled via false, got %d", cfg.YouTube.PollTimeoutSecs)
+	}
+	if cfg.YouTube.PollIntervalMS != 0 {
+		t.Fatalf("expected poll interval disabled via 0, got %d", cfg.YouTube.PollIntervalMS)
 	}
 }
 

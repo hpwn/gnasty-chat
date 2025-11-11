@@ -177,6 +177,13 @@ func main() {
 	}
 	twTLS = cfg.Twitch.TLS
 	ytURL = cfg.YouTube.LiveURL
+	log.Printf(
+		"harvester: youtube settings url=%s dump_unhandled=%t poll_timeout_secs=%d poll_interval_ms=%d",
+		ytURL,
+		cfg.YouTube.DumpUnhandled,
+		cfg.YouTube.PollTimeoutSecs,
+		cfg.YouTube.PollIntervalMS,
+	)
 
 	configSnapshot := cfg.Redacted()
 	log.Printf("%s", cfg.SummaryJSON())
@@ -515,7 +522,12 @@ func main() {
 				stopPoller()
 				pollCtx, pollCancel := context.WithCancel(ctx)
 				done := make(chan struct{})
-				client := ytlive.New(ytlive.Config{LiveURL: watchURL}, handler)
+				client := ytlive.New(ytlive.Config{
+					LiveURL:         watchURL,
+					DumpUnhandled:   cfg.YouTube.DumpUnhandled,
+					PollTimeoutSecs: cfg.YouTube.PollTimeoutSecs,
+					PollIntervalMS:  cfg.YouTube.PollIntervalMS,
+				}, handler)
 				go func() {
 					defer close(done)
 					if err := client.Run(pollCtx); err != nil && !errors.Is(err, context.Canceled) {
