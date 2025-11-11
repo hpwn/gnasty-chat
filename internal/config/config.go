@@ -43,9 +43,12 @@ type TwitchConfig struct {
 }
 
 type YouTubeConfig struct {
-	Enabled      bool
-	LiveURL      string
-	RetrySeconds int
+	Enabled         bool
+	LiveURL         string
+	RetrySeconds    int
+	DumpUnhandled   bool
+	PollTimeoutSecs int
+	PollIntervalMS  int
 }
 
 const (
@@ -53,6 +56,8 @@ const (
 	defaultBatchSize           = 1
 	defaultFlushMS             = 0
 	defaultYouTubeRetrySeconds = 30
+	defaultYouTubePollTimeout  = 15
+	defaultYouTubePollInterval = 10_000
 )
 
 func Load() Config {
@@ -135,6 +140,36 @@ func Load() Config {
 	cfg.YouTube.LiveURL = ytURL
 	cfg.YouTube.Enabled = ytURL != ""
 	cfg.YouTube.RetrySeconds = readInt("GNASTY_YT_RETRY_SECS", defaultYouTubeRetrySeconds)
+
+	if v, ok := readBoolOverride("GNASTY_YT_DUMP_UNHANDLED"); ok {
+		cfg.YouTube.DumpUnhandled = v
+	}
+
+	cfg.YouTube.PollTimeoutSecs = defaultYouTubePollTimeout
+	if v, ok := readBoolOverride("GNASTY_YT_POLL_TIMEOUT_SECS"); ok {
+		if v {
+			cfg.YouTube.PollTimeoutSecs = defaultYouTubePollTimeout
+		} else {
+			cfg.YouTube.PollTimeoutSecs = 0
+		}
+	} else if raw := strings.TrimSpace(os.Getenv("GNASTY_YT_POLL_TIMEOUT_SECS")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n >= 0 {
+			cfg.YouTube.PollTimeoutSecs = n
+		}
+	}
+
+	cfg.YouTube.PollIntervalMS = defaultYouTubePollInterval
+	if v, ok := readBoolOverride("GNASTY_YT_POLL_INTERVAL_MS"); ok {
+		if v {
+			cfg.YouTube.PollIntervalMS = defaultYouTubePollInterval
+		} else {
+			cfg.YouTube.PollIntervalMS = 0
+		}
+	} else if raw := strings.TrimSpace(os.Getenv("GNASTY_YT_POLL_INTERVAL_MS")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n >= 0 {
+			cfg.YouTube.PollIntervalMS = n
+		}
+	}
 
 	if !cfg.Twitch.Enabled {
 		cfg.Twitch.Enabled = len(cfg.Twitch.Channels) > 0
@@ -226,6 +261,18 @@ func readBoolDefaultTrue(name string, def bool) bool {
 	return v
 }
 
+func readBoolOverride(name string) (bool, bool) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return false, false
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, false
+	}
+	return v, true
+}
+
 func envExists(name string) bool {
 	_, ok := os.LookupEnv(name)
 	return ok
@@ -257,10 +304,13 @@ func (c Config) Summary() Summary {
 			RefreshEnabled:   refreshEnabled,
 		},
 		YouTube: YouTubeSummary{
-			Enabled:      c.YouTube.Enabled,
-			Channels:     ytChannels,
-			LiveURL:      c.YouTube.LiveURL,
-			RetrySeconds: c.YouTube.RetrySeconds,
+			Enabled:         c.YouTube.Enabled,
+			Channels:        ytChannels,
+			LiveURL:         c.YouTube.LiveURL,
+			RetrySeconds:    c.YouTube.RetrySeconds,
+			DumpUnhandled:   c.YouTube.DumpUnhandled,
+			PollTimeoutSecs: c.YouTube.PollTimeoutSecs,
+			PollIntervalMS:  c.YouTube.PollIntervalMS,
 		},
 	}
 	return summary
@@ -289,10 +339,13 @@ type TwitchSummary struct {
 }
 
 type YouTubeSummary struct {
-	Enabled      bool   `json:"enabled"`
-	Channels     int    `json:"channels"`
-	LiveURL      string `json:"live_url,omitempty"`
-	RetrySeconds int    `json:"retry_secs,omitempty"`
+	Enabled         bool   `json:"enabled"`
+	Channels        int    `json:"channels"`
+	LiveURL         string `json:"live_url,omitempty"`
+	RetrySeconds    int    `json:"retry_secs,omitempty"`
+	DumpUnhandled   bool   `json:"dump_unhandled"`
+	PollTimeoutSecs int    `json:"poll_timeout_secs,omitempty"`
+	PollIntervalMS  int    `json:"poll_interval_ms,omitempty"`
 }
 
 func (c Config) Redacted() map[string]any {
@@ -326,7 +379,10 @@ func (c Config) Redacted() map[string]any {
 				}
 				return c.YouTube.LiveURL
 			}(),
-			"retry_seconds": c.YouTube.RetrySeconds,
+			"retry_seconds":     c.YouTube.RetrySeconds,
+			"dump_unhandled":    c.YouTube.DumpUnhandled,
+			"poll_timeout_secs": c.YouTube.PollTimeoutSecs,
+			"poll_interval_ms":  c.YouTube.PollIntervalMS,
 		},
 	}
 	return payload

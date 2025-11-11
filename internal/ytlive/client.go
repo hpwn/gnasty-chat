@@ -10,7 +10,6 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -19,27 +18,48 @@ import (
 )
 
 type Config struct {
-	LiveURL string
+	LiveURL         string
+	DumpUnhandled   bool
+	PollTimeoutSecs int
+	PollIntervalMS  int
 }
 
 type Handler func(core.ChatMessage)
 
 type Client struct {
-	cfg     Config
-	handler Handler
-	http    *http.Client
+	cfg       Config
+	handler   Handler
+	http      *http.Client
+	pollDelay time.Duration
 }
 
 const (
 	defaultLivePollDelay = 10 * time.Second
+	defaultPollTimeout   = 15 * time.Second
 )
 
 func New(cfg Config, handler Handler) *Client {
-	httpClient := &http.Client{Timeout: 15 * time.Second}
+	httpClient := &http.Client{}
+	timeout := defaultPollTimeout
+	if cfg.PollTimeoutSecs > 0 {
+		timeout = time.Duration(cfg.PollTimeoutSecs) * time.Second
+	} else if cfg.PollTimeoutSecs == 0 {
+		timeout = 0
+	}
+	if timeout > 0 {
+		httpClient.Timeout = timeout
+	}
+
+	pollDelay := defaultLivePollDelay
+	if cfg.PollIntervalMS > 0 {
+		pollDelay = time.Duration(cfg.PollIntervalMS) * time.Millisecond
+	}
+
 	return &Client{
-		cfg:     cfg,
-		handler: handler,
-		http:    httpClient,
+		cfg:       cfg,
+		handler:   handler,
+		http:      httpClient,
+		pollDelay: pollDelay,
 	}
 }
 
@@ -129,7 +149,7 @@ func (c *Client) Run(ctx context.Context) error {
 			apiKey, clientVersion, continuation = "", "", ""
 		}
 
-		delay, fromContinuation := nextLivePollDelay(timeoutMs, hasTimeout)
+		delay, fromContinuation := nextLivePollDelay(timeoutMs, hasTimeout, c.pollDelay)
 		if fromContinuation {
 			log.Printf("ytlive: next poll in %dms (from continuation)", delay.Milliseconds())
 		} else {
@@ -252,8 +272,7 @@ func (c *Client) poll(ctx context.Context, apiKey, clientVersion, continuation s
 	continuation, timeout, hasTimeout := extractContinuation(payloadResp)
 	messages, summary, failures, nonChats := extractMessages(payloadResp)
 
-	dumpRaw := os.Getenv("GNASTY_YT_DUMP_UNHANDLED") != ""
-	logPollResults(summary, failures, nonChats, dumpRaw)
+	logPollResults(summary, failures, nonChats, c.cfg.DumpUnhandled)
 
 	return messages, continuation, timeout, hasTimeout, nil
 }
@@ -722,11 +741,14 @@ func continuationFromNode(node map[string]any) string {
 	return ""
 }
 
-func nextLivePollDelay(timeoutMs int, hasTimeout bool) (time.Duration, bool) {
+func nextLivePollDelay(timeoutMs int, hasTimeout bool, fallback time.Duration) (time.Duration, bool) {
 	if hasTimeout && timeoutMs > 0 {
 		return time.Duration(timeoutMs) * time.Millisecond, true
 	}
-	return defaultLivePollDelay, false
+	if fallback <= 0 {
+		return defaultLivePollDelay, false
+	}
+	return fallback, false
 }
 
 func sleepContext(ctx context.Context, d time.Duration) bool {
