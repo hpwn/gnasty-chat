@@ -27,23 +27,26 @@ type Config struct {
 type Handler func(core.ChatMessage)
 
 type Client struct {
-	cfg       Config
-	handler   Handler
-	http      *http.Client
-	pollDelay time.Duration
+	cfg         Config
+	handler     Handler
+	http        *http.Client
+	pollDelay   time.Duration
+	pollTimeout time.Duration
 }
 
 const (
-	defaultLivePollDelay = 10 * time.Second
-	defaultPollTimeout   = 15 * time.Second
+	defaultLivePollDelay = 3 * time.Second
+	defaultPollTimeout   = 20 * time.Second
 )
 
 func New(cfg Config, handler Handler) *Client {
 	httpClient := &http.Client{}
+
 	timeout := defaultPollTimeout
-	if cfg.PollTimeoutSecs > 0 {
+	switch {
+	case cfg.PollTimeoutSecs > 0:
 		timeout = time.Duration(cfg.PollTimeoutSecs) * time.Second
-	} else if cfg.PollTimeoutSecs == 0 {
+	case cfg.PollTimeoutSecs < 0:
 		timeout = 0
 	}
 	if timeout > 0 {
@@ -56,10 +59,11 @@ func New(cfg Config, handler Handler) *Client {
 	}
 
 	return &Client{
-		cfg:       cfg,
-		handler:   handler,
-		http:      httpClient,
-		pollDelay: pollDelay,
+		cfg:         cfg,
+		handler:     handler,
+		http:        httpClient,
+		pollDelay:   pollDelay,
+		pollTimeout: timeout,
 	}
 }
 
@@ -115,7 +119,15 @@ func (c *Client) Run(ctx context.Context) error {
 			}
 		}
 
-		messages, nextContinuation, timeoutMs, hasTimeout, err := c.poll(ctx, apiKey, clientVersion, continuation)
+		pollCtx := ctx
+		var cancel context.CancelFunc
+		if c.pollTimeout > 0 {
+			pollCtx, cancel = context.WithTimeout(ctx, c.pollTimeout)
+		}
+		messages, nextContinuation, timeoutMs, hasTimeout, err := c.poll(pollCtx, apiKey, clientVersion, continuation)
+		if cancel != nil {
+			cancel()
+		}
 		if err != nil {
 			log.Printf("ytlive: poll error: %v", err)
 			if !sleepContext(ctx, backoff) {
@@ -153,6 +165,9 @@ func (c *Client) Run(ctx context.Context) error {
 		if fromContinuation {
 			log.Printf("ytlive: next poll in %dms (from continuation)", delay.Milliseconds())
 		} else {
+			if delay > 0 && c.pollDelay != delay {
+				c.pollDelay = delay
+			}
 			log.Printf("ytlive: next poll in %dms (fallback)", delay.Milliseconds())
 		}
 		if !sleepContext(ctx, delay) {
@@ -516,12 +531,17 @@ func logPollResults(summary pollSummary, failures []chatFailure, nonChats []nonC
 		}
 	}
 	for _, action := range nonChats {
-		log.Printf("ytlive: skipped non-chat action type=%s key=%s", action.actionType, action.key)
-		if dumpRaw {
-			if raw := marshalTruncated(action.raw, 512); raw != "" {
-				log.Printf("ytlive: unhandled action dump %s", raw)
-			}
-		}
+		logUnhandled(action.actionType, action.key, action.raw, dumpRaw)
+	}
+}
+
+func logUnhandled(actionType, key string, raw map[string]any, dumpRaw bool) {
+	log.Printf("ytlive: skipped non-chat action type=%s key=%s", actionType, key)
+	if !dumpRaw {
+		return
+	}
+	if rawDump := marshalTruncated(raw, 512); rawDump != "" {
+		log.Printf("ytlive: unhandled action dump %s", rawDump)
 	}
 }
 
