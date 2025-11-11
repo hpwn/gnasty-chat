@@ -8,6 +8,36 @@ import (
 	"time"
 )
 
+func TestNewNormalizesTimingDefaults(t *testing.T) {
+	cfg := Config{}
+	client := New(cfg, nil)
+
+	if client.pollTimeout != defaultPollTimeout {
+		t.Fatalf("expected default poll timeout %v, got %v", defaultPollTimeout, client.pollTimeout)
+	}
+	if client.http.Timeout != defaultPollTimeout {
+		t.Fatalf("expected http timeout %v, got %v", defaultPollTimeout, client.http.Timeout)
+	}
+	if client.pollDelay != defaultLivePollDelay {
+		t.Fatalf("expected default poll delay %v, got %v", defaultLivePollDelay, client.pollDelay)
+	}
+}
+
+func TestNewAppliesTimingOverrides(t *testing.T) {
+	cfg := Config{PollTimeoutSecs: 5, PollIntervalMS: 4500}
+	client := New(cfg, nil)
+
+	if client.pollTimeout != 5*time.Second {
+		t.Fatalf("expected poll timeout 5s, got %v", client.pollTimeout)
+	}
+	if client.http.Timeout != 5*time.Second {
+		t.Fatalf("expected http timeout 5s, got %v", client.http.Timeout)
+	}
+	if client.pollDelay != 4500*time.Millisecond {
+		t.Fatalf("expected poll delay 4500ms, got %v", client.pollDelay)
+	}
+}
+
 func TestExtractContinuationTimeout(t *testing.T) {
 	payload := map[string]any{
 		"continuationContents": map[string]any{
