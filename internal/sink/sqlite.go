@@ -299,7 +299,7 @@ func (s *SQLiteSink) Write(msg core.ChatMessage) error {
 	}
 
 	emotesJSON := jsonText(msg.EmotesJSON, msg.Emotes, "[]")
-	badgesJSON := jsonText(msg.BadgesJSON, msg.Badges, "[]")
+	badgesJSON := encodeBadgesJSON(msg)
 	rawJSON := jsonText(msg.RawJSON, msg.Raw, "")
 
 	conflict := `ON CONFLICT(platform, ts, username, text) DO NOTHING`
@@ -378,6 +378,95 @@ func (s *SQLiteSink) String() string {
 	return fmt.Sprintf("SQLiteSink{%p}", s.db)
 }
 
+type badgesPayload struct {
+	Badges []core.ChatBadge `json:"badges,omitempty"`
+	Raw    core.BadgesRaw   `json:"raw,omitempty"`
+}
+
+func encodeBadgesJSON(msg core.ChatMessage) string {
+	if trimmed := strings.TrimSpace(msg.BadgesJSON); trimmed != "" {
+		return trimmed
+	}
+	payload := badgesPayload{
+		Badges: msg.Badges,
+		Raw:    msg.BadgesRaw,
+	}
+	if len(payload.Badges) == 0 && len(payload.Raw) == 0 {
+		return "[]"
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return "[]"
+	}
+	return string(data)
+}
+
+func decodeBadgesJSON(raw, platform string) ([]core.ChatBadge, core.BadgesRaw) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == "[]" || strings.EqualFold(trimmed, "null") {
+		return nil, nil
+	}
+
+	if strings.HasPrefix(trimmed, "{") {
+		var payload badgesPayload
+		if err := json.Unmarshal([]byte(trimmed), &payload); err == nil {
+			return normalizeBadgePlatforms(payload.Badges, platform), payload.Raw
+		}
+	}
+
+	var structured []core.ChatBadge
+	if err := json.Unmarshal([]byte(trimmed), &structured); err == nil {
+		return normalizeBadgePlatforms(structured, platform), nil
+	}
+
+	var legacy []string
+	if err := json.Unmarshal([]byte(trimmed), &legacy); err == nil {
+		return convertLegacyBadges(legacy, platform), nil
+	}
+
+	return nil, nil
+}
+
+func normalizeBadgePlatforms(badges []core.ChatBadge, platform string) []core.ChatBadge {
+	if len(badges) == 0 {
+		return nil
+	}
+	for i := range badges {
+		if badges[i].Platform == "" {
+			badges[i].Platform = platform
+		}
+	}
+	return badges
+}
+
+func convertLegacyBadges(entries []string, platform string) []core.ChatBadge {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]core.ChatBadge, 0, len(entries))
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		badge := core.ChatBadge{Platform: platform}
+		if idx := strings.Index(entry, "/"); idx != -1 {
+			badge.ID = strings.TrimSpace(entry[:idx])
+			badge.Version = strings.TrimSpace(entry[idx+1:])
+		} else {
+			badge.ID = entry
+		}
+		if badge.ID == "" {
+			continue
+		}
+		out = append(out, badge)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func (s *SQLiteSink) CountMessages(ctx context.Context, filters httpapi.Filters) (int64, error) {
 	query, args := buildMessageQuery(filters, true)
 	var n int64
@@ -436,6 +525,7 @@ func (s *SQLiteSink) ListMessages(ctx context.Context, filters httpapi.Filters) 
 		msg.EmotesJSON = emotesJSON
 		msg.RawJSON = rawJSON
 		msg.BadgesJSON = badgesJSON
+		msg.Badges, msg.BadgesRaw = decodeBadgesJSON(badgesJSON, msg.Platform)
 		msg.Colour = colour
 		out = append(out, msg)
 	}

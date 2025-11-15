@@ -180,8 +180,26 @@ Additional HTTP controls:
 All transports return the same JSON payload:
 
 ```json
-{ "ID": "...", "Ts": "RFC3339", "Username": "...", "Platform": "Twitch|YouTube", "Text": "...", "EmotesJSON": "...", "RawJSON": "...", "BadgesJSON": "...", "Colour": "..." }
+{
+  "ID": "...",
+  "Ts": "RFC3339",
+  "Username": "...",
+  "Platform": "Twitch|YouTube",
+  "Text": "...",
+  "EmotesJSON": "...",
+  "RawJSON": "...",
+  "BadgesJSON": "...",
+  "badges": [
+    { "platform": "Twitch", "id": "broadcaster", "version": "1" }
+  ],
+  "badges_raw": { "twitch": { "badges": "...", "badge_info": "..." } },
+  "Colour": "..."
+}
 ```
+
+`badges` is an optional structured list of normalized badges (platform/id/version)
+and `badges_raw` (also optional) carries the underlying platform payload used to
+compute the normalized list. No badge image URLs or fallbacks are emitted.
 
 `Ts` is always UTC (RFC3339 / RFC3339Nano depending on precision stored in SQLite).
 
