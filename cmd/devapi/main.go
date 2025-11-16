@@ -13,16 +13,18 @@ import (
 )
 
 type emitReq struct {
-	ID            string    `json:"id,omitempty"`
-	Platform      string    `json:"platform"`
-	PlatformMsgID string    `json:"platform_msg_id,omitempty"`
-	Username      string    `json:"username"`
-	Text          string    `json:"text"`
-	Ts            time.Time `json:"ts,omitempty"`
-	EmotesJSON    string    `json:"emotes_json,omitempty"`
-	RawJSON       string    `json:"raw_json,omitempty"`
-	BadgesJSON    string    `json:"badges_json,omitempty"`
-	Colour        string    `json:"colour,omitempty"`
+	ID            string           `json:"id,omitempty"`
+	Platform      string           `json:"platform"`
+	PlatformMsgID string           `json:"platform_msg_id,omitempty"`
+	Username      string           `json:"username"`
+	Text          string           `json:"text"`
+	Ts            time.Time        `json:"ts,omitempty"`
+	EmotesJSON    string           `json:"emotes_json,omitempty"`
+	RawJSON       string           `json:"raw_json,omitempty"`
+	BadgesJSON    string           `json:"badges_json,omitempty"`
+	Badges        []core.ChatBadge `json:"badges,omitempty"`
+	BadgesRaw     core.BadgesRaw   `json:"badges_raw,omitempty"`
+	Colour        string           `json:"colour,omitempty"`
 }
 
 func main() {
@@ -79,6 +81,8 @@ func main() {
 			EmotesJSON:    req.EmotesJSON,
 			RawJSON:       req.RawJSON,
 			BadgesJSON:    req.BadgesJSON,
+			Badges:        req.Badges,
+			BadgesRaw:     req.BadgesRaw,
 			Colour:        req.Colour,
 		}
 		if err := s.Write(msg); err != nil {

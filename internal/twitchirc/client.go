@@ -364,6 +364,20 @@ func parsePrivmsg(line, channel string) (core.ChatMessage, bool) {
 	badges := combineLists(tags["badges"], tags["badge-info"], ",")
 	emotes := splitList(tags["emotes"], "/")
 
+	var badgesRaw core.BadgesRaw
+	if tags["badges"] != "" || tags["badge-info"] != "" {
+		twitchRaw := map[string]string{}
+		if tags["badges"] != "" {
+			twitchRaw["badges"] = tags["badges"]
+		}
+		if tags["badge-info"] != "" {
+			twitchRaw["badge_info"] = tags["badge-info"]
+		}
+		if len(twitchRaw) > 0 {
+			badgesRaw = core.BadgesRaw{"twitch": twitchRaw}
+		}
+	}
+
 	rawMap := map[string]any{
 		"tags":   tags,
 		"prefix": prefix,
@@ -380,9 +394,38 @@ func parsePrivmsg(line, channel string) (core.ChatMessage, bool) {
 		Text:          text,
 		EmotesJSON:    encodeList(emotes),
 		RawJSON:       string(rawJSON),
-		BadgesJSON:    encodeList(badges),
+		Badges:        twitchBadges(badges),
+		BadgesRaw:     badgesRaw,
 		Colour:        tags["color"],
 	}, true
+}
+
+func twitchBadges(raw []string) []core.ChatBadge {
+	if len(raw) == 0 {
+		return nil
+	}
+	badges := make([]core.ChatBadge, 0, len(raw))
+	for _, entry := range raw {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		badge := core.ChatBadge{Platform: "Twitch"}
+		if idx := strings.Index(entry, "/"); idx != -1 {
+			badge.ID = strings.TrimSpace(entry[:idx])
+			badge.Version = strings.TrimSpace(entry[idx+1:])
+		} else {
+			badge.ID = entry
+		}
+		if badge.ID == "" {
+			continue
+		}
+		badges = append(badges, badge)
+	}
+	if len(badges) == 0 {
+		return nil
+	}
+	return badges
 }
 
 func authFailure(line string) bool {
