@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -560,12 +561,16 @@ func marshalTruncated(v map[string]any, limit int) string {
 }
 
 func buildMessage(renderer map[string]any) (core.ChatMessage, bool, string) {
+	badges, badgesRaw := parseYouTubeBadges(renderer)
+
 	msg := core.ChatMessage{
 		ID:            stringField(renderer, "id"),
 		PlatformMsgID: stringField(renderer, "id"),
 		Username:      textField(renderer, "authorName"),
 		Platform:      "YouTube",
 		Text:          textField(renderer, "message"),
+		Badges:        badges,
+		BadgesRaw:     badgesRaw,
 	}
 	if msg.Text == "" {
 		return core.ChatMessage{}, false, "empty text"
@@ -578,6 +583,119 @@ func buildMessage(renderer map[string]any) (core.ChatMessage, bool, string) {
 	}
 	msg.Ts = timestampField(renderer, "timestampUsec")
 	return msg, true, ""
+}
+
+func parseYouTubeBadges(renderer map[string]any) ([]core.ChatBadge, core.BadgesRaw) {
+	var badges []core.ChatBadge
+	rawPayload := map[string]any{}
+
+	addRaw := func(key string) {
+		if v, ok := renderer[key]; ok {
+			rawPayload[key] = v
+		}
+	}
+
+	addRaw("authorBadges")
+	addRaw("authorBadgesWithMetadata")
+	addRaw("authorExternalChannelId")
+
+	seen := make(map[string]bool)
+	addBadge := func(id, version string) {
+		if id == "" {
+			return
+		}
+		key := id + "|" + version
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		badges = append(badges, core.ChatBadge{Platform: "youtube", ID: id, Version: version})
+	}
+
+	extract := func(key string) {
+		arr, ok := renderer[key].([]any)
+		if !ok {
+			return
+		}
+		for _, entry := range arr {
+			entryMap, ok := entry.(map[string]any)
+			if !ok {
+				continue
+			}
+			id, version := interpretBadge(entryMap)
+			addBadge(id, version)
+		}
+	}
+
+	extract("authorBadges")
+	extract("authorBadgesWithMetadata")
+
+	var raw core.BadgesRaw
+	if len(rawPayload) > 0 {
+		raw = core.BadgesRaw{"youtube": rawPayload}
+	}
+
+	return badges, raw
+}
+
+func interpretBadge(entry map[string]any) (string, string) {
+	badge := entry
+	if inner, ok := entry["liveChatAuthorBadgeRenderer"].(map[string]any); ok {
+		badge = inner
+	}
+	if inner, ok := entry["metadataBadgeRenderer"].(map[string]any); ok {
+		badge = inner
+	}
+
+	style := strings.ToLower(stringField(badge, "style"))
+	tooltip := stringField(badge, "tooltip")
+	label := stringField(badge, "label")
+
+	iconType := ""
+	if icon, ok := badge["icon"].(map[string]any); ok {
+		iconType = strings.ToLower(stringField(icon, "iconType"))
+	}
+	accLabel := ""
+	if acc := digMap(badge, "accessibility", "accessibilityData"); acc != nil {
+		accLabel = stringField(acc, "label")
+	}
+
+	combined := strings.ToLower(strings.Join([]string{style, tooltip, label, iconType, accLabel}, " "))
+
+	switch {
+	case strings.Contains(combined, "owner"):
+		return "owner", ""
+	case strings.Contains(combined, "moderator"):
+		return "moderator", ""
+	case strings.Contains(combined, "verified") || strings.Contains(iconType, "check"):
+		return "verified", ""
+	case strings.Contains(combined, "member"):
+		return "member", extractBadgeVersion(tooltip, label, accLabel)
+	}
+
+	return "", ""
+}
+
+func extractBadgeVersion(texts ...string) string {
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)\(([^)]+)\)`),
+		regexp.MustCompile(`(?i)(\d+\s*(?:month|months|year|years))`),
+		regexp.MustCompile(`(?i)(level\s*\d+)`),
+		regexp.MustCompile(`(?i)(tier\s*\d+)`),
+	}
+
+	for _, text := range texts {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		for _, pattern := range patterns {
+			if match := pattern.FindStringSubmatch(text); len(match) > 1 {
+				return strings.TrimSpace(match[1])
+			}
+		}
+	}
+	return ""
 }
 
 func stringField(m map[string]any, key string) string {
