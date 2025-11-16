@@ -361,22 +361,8 @@ func parsePrivmsg(line, channel string) (core.ChatMessage, bool) {
 		id = fmt.Sprintf("%s-%d", user, ts.UnixNano())
 	}
 
-	badges := combineLists(tags["badges"], tags["badge-info"], ",")
+	badges, badgesRaw := parseTwitchBadges(tags, channel)
 	emotes := splitList(tags["emotes"], "/")
-
-	var badgesRaw core.BadgesRaw
-	if tags["badges"] != "" || tags["badge-info"] != "" {
-		twitchRaw := map[string]string{}
-		if tags["badges"] != "" {
-			twitchRaw["badges"] = tags["badges"]
-		}
-		if tags["badge-info"] != "" {
-			twitchRaw["badge_info"] = tags["badge-info"]
-		}
-		if len(twitchRaw) > 0 {
-			badgesRaw = core.BadgesRaw{"twitch": twitchRaw}
-		}
-	}
 
 	rawMap := map[string]any{
 		"tags":   tags,
@@ -394,38 +380,121 @@ func parsePrivmsg(line, channel string) (core.ChatMessage, bool) {
 		Text:          text,
 		EmotesJSON:    encodeList(emotes),
 		RawJSON:       string(rawJSON),
-		Badges:        twitchBadges(badges),
+		Badges:        badges,
 		BadgesRaw:     badgesRaw,
+		BadgesJSON:    encodeBadgesPayload(badges, badgesRaw),
 		Colour:        tags["color"],
 	}, true
 }
 
-func twitchBadges(raw []string) []core.ChatBadge {
-	if len(raw) == 0 {
-		return nil
-	}
-	badges := make([]core.ChatBadge, 0, len(raw))
-	for _, entry := range raw {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
+func parseTwitchBadges(tags map[string]string, channel string) ([]core.ChatBadge, core.BadgesRaw) {
+	badgeList := parseBadgePairs(tags["badges"], ",")
+	badgeInfo := parseBadgeInfo(tags["badge-info"], ",")
+
+	badges := make([]core.ChatBadge, 0, len(badgeList))
+	for _, pair := range badgeList {
+		if pair.id == "" {
 			continue
 		}
-		badge := core.ChatBadge{Platform: "Twitch"}
+		version := pair.version
+		if info, ok := badgeInfo[pair.id]; ok && info != "" {
+			version = info
+		}
+		if version == "" && pair.id == "broadcaster" {
+			version = channel
+		}
+		badges = append(badges, core.ChatBadge{Platform: "twitch", ID: pair.id, Version: version})
+	}
+
+	var badgesRaw core.BadgesRaw
+	if tags["badges"] != "" || tags["badge-info"] != "" {
+		twitchRaw := map[string]string{}
+		if tags["badges"] != "" {
+			twitchRaw["badges"] = tags["badges"]
+		}
+		if tags["badge-info"] != "" {
+			twitchRaw["badge_info"] = tags["badge-info"]
+		}
+		if len(twitchRaw) > 0 {
+			badgesRaw = core.BadgesRaw{"twitch": twitchRaw}
+		}
+	}
+
+	return badges, badgesRaw
+}
+
+type badgePair struct {
+	id      string
+	version string
+}
+
+func parseBadgePairs(raw, sep string) []badgePair {
+	if raw == "" {
+		return nil
+	}
+	entries := splitList(raw, sep)
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]badgePair, 0, len(entries))
+	for _, entry := range entries {
+		pair := badgePair{}
 		if idx := strings.Index(entry, "/"); idx != -1 {
-			badge.ID = strings.TrimSpace(entry[:idx])
-			badge.Version = strings.TrimSpace(entry[idx+1:])
+			pair.id = strings.TrimSpace(entry[:idx])
+			pair.version = strings.TrimSpace(entry[idx+1:])
 		} else {
-			badge.ID = entry
+			pair.id = entry
 		}
-		if badge.ID == "" {
-			continue
+		if pair.id != "" {
+			out = append(out, pair)
 		}
-		badges = append(badges, badge)
 	}
-	if len(badges) == 0 {
+	if len(out) == 0 {
 		return nil
 	}
-	return badges
+	return out
+}
+
+func parseBadgeInfo(raw, sep string) map[string]string {
+	if raw == "" {
+		return nil
+	}
+	entries := splitList(raw, sep)
+	if len(entries) == 0 {
+		return nil
+	}
+	info := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		if idx := strings.Index(entry, "/"); idx != -1 {
+			id := strings.TrimSpace(entry[:idx])
+			version := strings.TrimSpace(entry[idx+1:])
+			if id != "" {
+				info[id] = version
+			}
+		}
+	}
+	if len(info) == 0 {
+		return nil
+	}
+	return info
+}
+
+func encodeBadgesPayload(badges []core.ChatBadge, raw core.BadgesRaw) string {
+	if len(badges) == 0 && len(raw) == 0 {
+		return ""
+	}
+	payload := struct {
+		Badges []core.ChatBadge `json:"badges,omitempty"`
+		Raw    core.BadgesRaw   `json:"raw,omitempty"`
+	}{
+		Badges: badges,
+		Raw:    raw,
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 func authFailure(line string) bool {
@@ -492,12 +561,6 @@ func splitList(s, sep string) []string {
 		}
 	}
 	return out
-}
-
-func combineLists(a, b, sep string) []string {
-	list := splitList(a, sep)
-	list = append(list, splitList(b, sep)...)
-	return list
 }
 
 func encodeList(items []string) string {
