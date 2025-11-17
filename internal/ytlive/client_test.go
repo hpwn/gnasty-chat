@@ -208,3 +208,114 @@ func TestExtractMessagesAndLogging(t *testing.T) {
 		t.Fatalf("expected dump with env set, got %q", output)
 	}
 }
+
+func TestParseYouTubeBadges(t *testing.T) {
+	renderer := map[string]any{
+		"authorExternalChannelId": "channel-123",
+		"authorBadges": []any{
+			map[string]any{
+				"liveChatAuthorBadgeRenderer": map[string]any{
+					"icon":    map[string]any{"iconType": "OWNER"},
+					"tooltip": "Channel owner",
+				},
+			},
+			map[string]any{
+				"liveChatAuthorBadgeRenderer": map[string]any{
+					"tooltip": "Member (12 months)",
+					"accessibility": map[string]any{
+						"accessibilityData": map[string]any{"label": "Member (12 months)"},
+					},
+				},
+			},
+		},
+		"authorBadgesWithMetadata": []any{
+			map[string]any{
+				"metadataBadgeRenderer": map[string]any{
+					"label": "Verified",
+					"icon":  map[string]any{"iconType": "CHECK"},
+				},
+			},
+		},
+	}
+
+	badges, raw := parseYouTubeBadges(renderer)
+	expected := map[string]string{"owner": "", "member": "12 months", "verified": ""}
+
+	if len(badges) != len(expected) {
+		t.Fatalf("expected %d badges, got %d", len(expected), len(badges))
+	}
+
+	for _, badge := range badges {
+		wantVersion, ok := expected[badge.ID]
+		if !ok {
+			t.Fatalf("unexpected badge id %q", badge.ID)
+		}
+		if badge.Platform != "youtube" {
+			t.Fatalf("expected youtube platform, got %q", badge.Platform)
+		}
+		if badge.Version != wantVersion {
+			t.Fatalf("badge %s expected version %q, got %q", badge.ID, wantVersion, badge.Version)
+		}
+		delete(expected, badge.ID)
+	}
+
+	if len(expected) != 0 {
+		t.Fatalf("missing expected badges: %#v", expected)
+	}
+
+	ytRaw, ok := raw["youtube"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected youtube raw payload, got %#v", raw)
+	}
+	if _, ok := ytRaw["authorBadges"]; !ok {
+		t.Fatalf("missing authorBadges in raw payload: %#v", ytRaw)
+	}
+	if _, ok := ytRaw["authorBadgesWithMetadata"]; !ok {
+		t.Fatalf("missing authorBadgesWithMetadata in raw payload: %#v", ytRaw)
+	}
+	if ytRaw["authorExternalChannelId"] != "channel-123" {
+		t.Fatalf("expected authorExternalChannelId to be preserved, got %#v", ytRaw["authorExternalChannelId"])
+	}
+}
+
+func TestParseYouTubeBadgesPrefersMetadataVersion(t *testing.T) {
+	renderer := map[string]any{
+		"authorBadgesWithMetadata": []any{
+			map[string]any{
+				"metadataBadgeRenderer": map[string]any{
+					"label": "Moderator",
+					"style": "LIVE_CHAT_MODERATOR",
+				},
+			},
+			map[string]any{
+				"metadataBadgeRenderer": map[string]any{
+					"label":   "Level 3",
+					"style":   "MEMBER",
+					"tooltip": "Member Level 3",
+				},
+			},
+		},
+	}
+
+	badges, _ := parseYouTubeBadges(renderer)
+	expected := map[string]string{"moderator": "", "member": "Level 3"}
+
+	if len(badges) != len(expected) {
+		t.Fatalf("expected %d badges, got %d", len(expected), len(badges))
+	}
+
+	for _, badge := range badges {
+		wantVersion, ok := expected[badge.ID]
+		if !ok {
+			t.Fatalf("unexpected badge id %q", badge.ID)
+		}
+		if badge.Version != wantVersion {
+			t.Fatalf("badge %s expected version %q, got %q", badge.ID, wantVersion, badge.Version)
+		}
+		delete(expected, badge.ID)
+	}
+
+	if len(expected) != 0 {
+		t.Fatalf("missing expected badges: %#v", expected)
+	}
+}
