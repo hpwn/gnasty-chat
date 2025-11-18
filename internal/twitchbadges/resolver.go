@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -80,6 +81,8 @@ func (r *Resolver) Enrich(ctx context.Context, channel string, badges []core.Cha
 		return badges
 	}
 
+	channel = strings.TrimSpace(strings.ToLower(channel))
+
 	merged := r.lookupBadgeSets(ctx, channel)
 	if len(merged) == 0 {
 		return badges
@@ -131,6 +134,7 @@ func (r *Resolver) lookupBadgeSets(ctx context.Context, channel string) map[stri
 		mergeBadgeSets(result, globalSets)
 	} else if globalSets, err := r.fetchBadgeSets(ctx, token, ""); err == nil {
 		r.storeBadgeSets("global", globalSets, ttl)
+		log.Printf("twitchbadges: fetched global badge metadata (%d sets)", len(globalSets))
 		mergeBadgeSets(result, globalSets)
 	} else {
 		log.Printf("twitchbadges: fetch global badges: %v", err)
@@ -161,6 +165,7 @@ func (r *Resolver) lookupBadgeSets(ctx context.Context, channel string) map[stri
 
 	if channelSets, err := r.fetchBadgeSets(ctx, token, broadcasterID); err == nil {
 		r.storeBadgeSets(broadcasterID, channelSets, ttl)
+		log.Printf("twitchbadges: fetched badge metadata for %s (%d sets)", channel, len(channelSets))
 		mergeBadgeSets(result, channelSets)
 	} else {
 		log.Printf("twitchbadges: fetch badges for %s: %v", channel, err)
@@ -237,7 +242,8 @@ func (r *Resolver) fetchBadgeSets(ctx context.Context, token, broadcasterID stri
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("status %d", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	var parsed helixBadgeResponse

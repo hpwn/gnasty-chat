@@ -130,3 +130,29 @@ func TestResolverGracefulFailure(t *testing.T) {
 		t.Fatalf("expected no images on failure, got %#v", enriched[0].Images)
 	}
 }
+
+func TestResolverDisabledWithoutCredentials(t *testing.T) {
+	// Empty credentials should short-circuit without network calls.
+	tokenCalls := &atomic.Int64{}
+	mux := http.NewServeMux()
+	mux.Handle("/oauth2/token", tokenResponder{count: tokenCalls})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	helixBaseURL = srv.URL + "/helix"
+	oauthTokenURL = srv.URL + "/oauth2/token"
+
+	r := &Resolver{ClientID: "", ClientSecret: "", TTL: time.Minute}
+	r.HTTP = srv.Client()
+
+	badges := []core.ChatBadge{{Platform: "twitch", ID: "subscriber", Version: "17"}}
+	enriched := r.Enrich(context.Background(), "channel", badges)
+
+	if got := tokenCalls.Load(); got != 0 {
+		t.Fatalf("expected no token calls when credentials empty, got %d", got)
+	}
+	if len(enriched) != 1 || len(enriched[0].Images) != 0 {
+		t.Fatalf("expected passthrough badges without images, got %#v", enriched)
+	}
+}

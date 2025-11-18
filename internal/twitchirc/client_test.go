@@ -3,6 +3,7 @@ package twitchirc
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"reflect"
@@ -164,6 +165,28 @@ func TestParsePrivmsgEnrichesBadges(t *testing.T) {
 	}
 	if len(msg.Badges[0].Images) != 1 {
 		t.Fatalf("expected badge images to be populated")
+	}
+}
+
+func TestParsePrivmsgEncodesBadgeImages(t *testing.T) {
+	line := "@badges=moderator/1;badge-info=subscriber/6;display-name=User;id=msg-4; :user!user@user.tmi.twitch.tv PRIVMSG #chan :hello"
+	msg, ok := parsePrivmsg(context.Background(), line, "chan", stubBadgeResolver{})
+	if !ok {
+		t.Fatalf("expected parsePrivmsg to succeed")
+	}
+
+	var payload struct {
+		Badges []core.ChatBadge `json:"badges"`
+		Raw    core.BadgesRaw   `json:"raw"`
+	}
+	if err := json.Unmarshal([]byte(msg.BadgesJSON), &payload); err != nil {
+		t.Fatalf("failed to decode badges json: %v", err)
+	}
+	if len(payload.Badges) != 1 || len(payload.Badges[0].Images) != 1 {
+		t.Fatalf("expected encoded badge images, got %#v", payload.Badges)
+	}
+	if payload.Raw == nil || payload.Raw["twitch"] == nil {
+		t.Fatalf("expected raw twitch badge info to be preserved, got %#v", payload.Raw)
 	}
 }
 
