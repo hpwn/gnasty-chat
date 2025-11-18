@@ -182,24 +182,41 @@ All transports return the same JSON payload:
 ```json
 {
   "ID": "...",
+  "PlatformMsgID": "...",
   "Ts": "RFC3339",
+  "TimestampMS": 1700176192345,
   "Username": "...",
   "Platform": "Twitch|YouTube",
   "Text": "...",
   "EmotesJSON": "...",
   "RawJSON": "...",
-  "BadgesJSON": "...",
   "badges": [
     { "platform": "Twitch", "id": "broadcaster", "version": "1" }
   ],
   "badges_raw": { "twitch": { "badges": "...", "badge_info": "..." } },
+  "BadgesJSON": "...",
   "Colour": "..."
 }
 ```
 
 `badges` is an optional structured list of normalized badges (platform/id/version)
 and `badges_raw` (also optional) carries the underlying platform payload used to
-compute the normalized list. No badge image URLs or fallbacks are emitted.
+compute the normalized list. gnasty-chat does not emit custom badge art or
+fallback images.
+
+### Badge metadata passthrough
+
+- `badges` contains normalized entries with `platform`, `id`, and `version` so
+  downstream renderers can look up official art and metadata.
+- `badges_raw` mirrors the source platform payload for debugging and parity
+  checks; its shape matches the platform responses and may change without a
+  schema bump.
+- `EmotesJSON`, `RawJSON`, and `BadgesJSON` contain the raw strings stored in
+  SQLite and forwarded over REST/SSE/WS. The structured `Emotes`/`Raw` fields in
+  `core.ChatMessage` are currently unused and not serialized by the transports.
+- Badge image resolution happens downstream (e.g., overlay/UI) using the
+  platform's official Twitch or YouTube endpoints. gnasty-chat intentionally
+  avoids embedding image URLs or shipping custom fallbacks.
 
 `Ts` is always UTC (RFC3339 / RFC3339Nano depending on precision stored in SQLite).
 
