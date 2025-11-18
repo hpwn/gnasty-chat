@@ -425,6 +425,7 @@ func main() {
 			var badgeResolver twitchirc.BadgeResolver
 			if twClientID != "" && twClientSecret != "" {
 				badgeResolver = twitchbadges.NewResolver(twClientID, twClientSecret)
+				log.Printf("harvester: twitch badge resolver enabled")
 			}
 
 			cfg := twitchirc.Config{
