@@ -6,9 +6,19 @@ import "time"
 // Platform identifies the source (e.g., Twitch), ID is the badge slug, and
 // Version corresponds to the platform's version tag (if any).
 type ChatBadge struct {
-	Platform string `json:"platform,omitempty"`
-	ID       string `json:"id,omitempty"`
-	Version  string `json:"version,omitempty"`
+	Platform string           `json:"platform,omitempty"`
+	ID       string           `json:"id,omitempty"`
+	Version  string           `json:"version,omitempty"`
+	Images   []ChatBadgeImage `json:"images,omitempty"`
+}
+
+// ChatBadgeImage describes a rendered badge thumbnail for a specific badge
+// version. Width and height are included when known.
+type ChatBadgeImage struct {
+	ID     string `json:"id,omitempty"`
+	URL    string `json:"url,omitempty"`
+	Width  int    `json:"width,omitempty"`
+	Height int    `json:"height,omitempty"`
 }
 
 // BadgesRaw carries the raw platform-specific badge payload, when available.

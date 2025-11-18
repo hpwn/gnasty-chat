@@ -128,7 +128,7 @@ func TestParsePrivmsgBadges(t *testing.T) {
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			msg, ok := parsePrivmsg(tt.line, channel)
+			msg, ok := parsePrivmsg(context.Background(), tt.line, channel, nil)
 			if !ok {
 				t.Fatalf("expected parsePrivmsg to succeed")
 			}
@@ -139,5 +139,52 @@ func TestParsePrivmsgBadges(t *testing.T) {
 				t.Fatalf("badges raw mismatch:\nexpected %#v\nactual   %#v", tt.raw, msg.BadgesRaw)
 			}
 		})
+	}
+}
+
+type stubBadgeResolver struct{}
+
+func (stubBadgeResolver) Enrich(_ context.Context, _ string, badges []core.ChatBadge) []core.ChatBadge {
+	out := make([]core.ChatBadge, len(badges))
+	copy(out, badges)
+	for i := range out {
+		out[i].Images = []core.ChatBadgeImage{{URL: "https://example.com/badge.png", Width: 18, Height: 18}}
+	}
+	return out
+}
+
+func TestParsePrivmsgEnrichesBadges(t *testing.T) {
+	line := "@badges=moderator/1;display-name=User;id=msg-3; :user!user@user.tmi.twitch.tv PRIVMSG #chan :hi"
+	msg, ok := parsePrivmsg(context.Background(), line, "chan", stubBadgeResolver{})
+	if !ok {
+		t.Fatalf("expected parsePrivmsg to succeed")
+	}
+	if len(msg.Badges) != 1 {
+		t.Fatalf("expected one badge, got %d", len(msg.Badges))
+	}
+	if len(msg.Badges[0].Images) != 1 {
+		t.Fatalf("expected badge images to be populated")
+	}
+}
+
+type deadlineBadgeResolver struct {
+	deadlineSet bool
+}
+
+func (d *deadlineBadgeResolver) Enrich(ctx context.Context, _ string, badges []core.ChatBadge) []core.ChatBadge {
+	_, d.deadlineSet = ctx.Deadline()
+	return badges
+}
+
+func TestParsePrivmsgBadgeEnrichmentTimeout(t *testing.T) {
+	line := "@badges=moderator/1;display-name=User;id=msg-3; :user!user@user.tmi.twitch.tv PRIVMSG #chan :hi"
+	resolver := &deadlineBadgeResolver{}
+
+	_, ok := parsePrivmsg(context.Background(), line, "chan", resolver)
+	if !ok {
+		t.Fatalf("expected parsePrivmsg to succeed")
+	}
+	if !resolver.deadlineSet {
+		t.Fatalf("expected badge resolver context to include a deadline")
 	}
 }

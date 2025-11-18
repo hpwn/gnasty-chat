@@ -22,6 +22,7 @@ import (
 	"github.com/you/gnasty-chat/internal/sink"
 	"github.com/you/gnasty-chat/internal/twitch"
 	"github.com/you/gnasty-chat/internal/twitchauth"
+	"github.com/you/gnasty-chat/internal/twitchbadges"
 	"github.com/you/gnasty-chat/internal/twitchirc"
 	"github.com/you/gnasty-chat/internal/version"
 	"github.com/you/gnasty-chat/internal/ytlive"
@@ -421,12 +422,18 @@ func main() {
 
 			state := newTokenState(token)
 
+			var badgeResolver twitchirc.BadgeResolver
+			if twClientID != "" && twClientSecret != "" {
+				badgeResolver = twitchbadges.NewResolver(twClientID, twClientSecret)
+			}
+
 			cfg := twitchirc.Config{
 				Channel:       channel,
 				Nick:          nick,
 				Token:         token,
 				UseTLS:        twTLS,
 				TokenProvider: state.Current,
+				Badges:        badgeResolver,
 			}
 
 			if refreshMgr != nil {
