@@ -35,6 +35,8 @@ type BadgeResolver interface {
 	Enrich(ctx context.Context, channel string, badges []core.ChatBadge) []core.ChatBadge
 }
 
+const badgeEnrichTimeout = 2 * time.Second
+
 type Client struct {
 	cfg    Config
 	handle Handler
@@ -371,7 +373,9 @@ func parsePrivmsg(ctx context.Context, line, channel string, badgeResolver Badge
 
 	badgeList, badgesRaw := parseTwitchBadges(tags, channel)
 	if badgeResolver != nil {
-		badgeList = badgeResolver.Enrich(ctx, channel, badgeList)
+		enrichCtx, cancel := context.WithTimeout(ctx, badgeEnrichTimeout)
+		badgeList = badgeResolver.Enrich(enrichCtx, channel, badgeList)
+		cancel()
 	}
 	emotes := splitList(tags["emotes"], "/")
 

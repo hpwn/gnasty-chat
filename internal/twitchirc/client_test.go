@@ -166,3 +166,25 @@ func TestParsePrivmsgEnrichesBadges(t *testing.T) {
 		t.Fatalf("expected badge images to be populated")
 	}
 }
+
+type deadlineBadgeResolver struct {
+	deadlineSet bool
+}
+
+func (d *deadlineBadgeResolver) Enrich(ctx context.Context, _ string, badges []core.ChatBadge) []core.ChatBadge {
+	_, d.deadlineSet = ctx.Deadline()
+	return badges
+}
+
+func TestParsePrivmsgBadgeEnrichmentTimeout(t *testing.T) {
+	line := "@badges=moderator/1;display-name=User;id=msg-3; :user!user@user.tmi.twitch.tv PRIVMSG #chan :hi"
+	resolver := &deadlineBadgeResolver{}
+
+	_, ok := parsePrivmsg(context.Background(), line, "chan", resolver)
+	if !ok {
+		t.Fatalf("expected parsePrivmsg to succeed")
+	}
+	if !resolver.deadlineSet {
+		t.Fatalf("expected badge resolver context to include a deadline")
+	}
+}
