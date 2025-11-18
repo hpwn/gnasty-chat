@@ -24,19 +24,27 @@ type Config struct {
 	TokenProvider func() string
 	RefreshNow    func(context.Context) (string, error)
 	Addr          string
+	Badges        BadgeResolver
 }
 
 type Handler func(core.ChatMessage)
 
+// BadgeResolver enriches parsed Twitch badges with platform-provided metadata
+// such as official artwork URLs.
+type BadgeResolver interface {
+	Enrich(ctx context.Context, channel string, badges []core.ChatBadge) []core.ChatBadge
+}
+
 type Client struct {
 	cfg    Config
 	handle Handler
+	badges BadgeResolver
 }
 
 var errAuthFailed = errors.New("twitchirc: authentication failed")
 
 func New(cfg Config, h Handler) *Client {
-	return &Client{cfg: cfg, handle: h}
+	return &Client{cfg: cfg, handle: h, badges: cfg.Badges}
 }
 
 func (c *Client) Run(ctx context.Context) error {
@@ -276,7 +284,7 @@ func (c *Client) runOnce(ctx context.Context) error {
 			return fmt.Errorf("server requested reconnect")
 		}
 
-		if msg, ok := parsePrivmsg(line, c.cfg.Channel); ok {
+		if msg, ok := parsePrivmsg(ctx, line, c.cfg.Channel, c.badges); ok {
 			total++
 			window++
 			if c.handle != nil {
@@ -286,7 +294,7 @@ func (c *Client) runOnce(ctx context.Context) error {
 	}
 }
 
-func parsePrivmsg(line, channel string) (core.ChatMessage, bool) {
+func parsePrivmsg(ctx context.Context, line, channel string, badgeResolver BadgeResolver) (core.ChatMessage, bool) {
 	original := line
 	rest := line
 	tags := map[string]string{}
@@ -361,7 +369,10 @@ func parsePrivmsg(line, channel string) (core.ChatMessage, bool) {
 		id = fmt.Sprintf("%s-%d", user, ts.UnixNano())
 	}
 
-	badges, badgesRaw := parseTwitchBadges(tags, channel)
+	badgeList, badgesRaw := parseTwitchBadges(tags, channel)
+	if badgeResolver != nil {
+		badgeList = badgeResolver.Enrich(ctx, channel, badgeList)
+	}
 	emotes := splitList(tags["emotes"], "/")
 
 	rawMap := map[string]any{
@@ -380,9 +391,9 @@ func parsePrivmsg(line, channel string) (core.ChatMessage, bool) {
 		Text:          text,
 		EmotesJSON:    encodeList(emotes),
 		RawJSON:       string(rawJSON),
-		Badges:        badges,
+		Badges:        badgeList,
 		BadgesRaw:     badgesRaw,
-		BadgesJSON:    encodeBadgesPayload(badges, badgesRaw),
+		BadgesJSON:    encodeBadgesPayload(badgeList, badgesRaw),
 		Colour:        tags["color"],
 	}, true
 }
