@@ -36,6 +36,8 @@ type Resolver struct {
 	token     cachedToken
 	badgeSets map[string]cacheEntry
 	users     map[string]cacheEntry
+
+	enriched sync.Map
 }
 
 type cachedToken struct {
@@ -91,6 +93,8 @@ func (r *Resolver) Enrich(ctx context.Context, channel string, badges []core.Cha
 	enriched := make([]core.ChatBadge, len(badges))
 	copy(enriched, badges)
 
+	enrichedCount := 0
+
 	for i, badge := range enriched {
 		if !strings.EqualFold(badge.Platform, "twitch") {
 			continue
@@ -101,10 +105,18 @@ func (r *Resolver) Enrich(ctx context.Context, channel string, badges []core.Cha
 		}
 		if images := versions[badge.Version]; len(images) > 0 {
 			enriched[i].Images = images
+			enrichedCount++
 			continue
 		}
 		if images := versions[""]; len(images) > 0 {
 			enriched[i].Images = images
+			enrichedCount++
+		}
+	}
+
+	if enrichedCount > 0 {
+		if _, seen := r.enriched.LoadOrStore(channel, struct{}{}); !seen {
+			log.Printf("twitchbadges: enriched %d badges for channel=%s", enrichedCount, channel)
 		}
 	}
 

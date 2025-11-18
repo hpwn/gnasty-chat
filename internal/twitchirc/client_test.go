@@ -190,6 +190,50 @@ func TestParsePrivmsgEncodesBadgeImages(t *testing.T) {
 	}
 }
 
+func TestParsePrivmsgWithResolverPopulatesImages(t *testing.T) {
+	line := "@badge-info=subscriber/24;badges=subscriber/24,premium/1;display-name=User;id=msg-5; :user!user@user.tmi.twitch.tv PRIVMSG #chan :hi"
+	msg, ok := parsePrivmsg(context.Background(), line, "chan", stubBadgeResolver{})
+	if !ok {
+		t.Fatalf("expected parsePrivmsg to succeed")
+	}
+
+	if len(msg.Badges) != 2 {
+		t.Fatalf("expected two badges, got %d", len(msg.Badges))
+	}
+	for i, badge := range msg.Badges {
+		if len(badge.Images) == 0 {
+			t.Fatalf("badge %d missing images: %#v", i, badge)
+		}
+	}
+
+	var payload struct {
+		Badges []core.ChatBadge `json:"badges"`
+	}
+	if err := json.Unmarshal([]byte(msg.BadgesJSON), &payload); err != nil {
+		t.Fatalf("failed to decode badges json: %v", err)
+	}
+	if len(payload.Badges) != 2 || len(payload.Badges[0].Images) == 0 || len(payload.Badges[1].Images) == 0 {
+		t.Fatalf("expected serialized badge images, got %#v", payload.Badges)
+	}
+}
+
+func TestParsePrivmsgWithoutResolverKeepsBadges(t *testing.T) {
+	line := "@badge-info=subscriber/12;badges=subscriber/12,partner/1;display-name=User;id=msg-6; :user!user@user.tmi.twitch.tv PRIVMSG #chan :hi"
+	msg, ok := parsePrivmsg(context.Background(), line, "chan", nil)
+	if !ok {
+		t.Fatalf("expected parsePrivmsg to succeed")
+	}
+
+	if len(msg.Badges) != 2 {
+		t.Fatalf("expected two badges, got %d", len(msg.Badges))
+	}
+	for i, badge := range msg.Badges {
+		if badge.Images != nil {
+			t.Fatalf("expected badge %d images to be empty when resolver disabled, got %#v", i, badge.Images)
+		}
+	}
+}
+
 type deadlineBadgeResolver struct {
 	deadlineSet bool
 }
