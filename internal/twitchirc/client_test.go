@@ -5,9 +5,12 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/you/gnasty-chat/internal/core"
 )
 
 func TestAuthFailureTriggersRefresh(t *testing.T) {
@@ -93,4 +96,48 @@ func TestAuthFailureTriggersRefresh(t *testing.T) {
 		t.Fatal("client did not exit")
 	}
 	wg.Wait()
+}
+
+func TestParsePrivmsgBadges(t *testing.T) {
+	channel := "chan"
+	tests := []struct {
+		name     string
+		line     string
+		expected []core.ChatBadge
+		raw      core.BadgesRaw
+	}{
+		{
+			name: "moderator subscriber with info override",
+			line: "@badge-info=subscriber/24;badges=moderator/1,subscriber/6,partner/1;display-name=User;color=#1E90FF;id=msg-1;" +
+				"tmi-sent-ts=1234567890 :user!user@user.tmi.twitch.tv PRIVMSG #chan :hello world",
+			expected: []core.ChatBadge{
+				{Platform: "twitch", ID: "moderator", Version: "1"},
+				{Platform: "twitch", ID: "subscriber", Version: "24"},
+				{Platform: "twitch", ID: "partner", Version: "1"},
+			},
+			raw: core.BadgesRaw{"twitch": map[string]string{"badges": "moderator/1,subscriber/6,partner/1", "badge_info": "subscriber/24"}},
+		},
+		{
+			name:     "broadcaster channel fallback",
+			line:     "@badges=broadcaster/;display-name=Streamer;id=msg-2; :streamer!streamer@streamer.tmi.twitch.tv PRIVMSG #chan :hi",
+			expected: []core.ChatBadge{{Platform: "twitch", ID: "broadcaster", Version: channel}},
+			raw:      core.BadgesRaw{"twitch": map[string]string{"badges": "broadcaster/"}},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			msg, ok := parsePrivmsg(tt.line, channel)
+			if !ok {
+				t.Fatalf("expected parsePrivmsg to succeed")
+			}
+			if !reflect.DeepEqual(msg.Badges, tt.expected) {
+				t.Fatalf("badges mismatch:\nexpected %#v\nactual   %#v", tt.expected, msg.Badges)
+			}
+			if !reflect.DeepEqual(msg.BadgesRaw, tt.raw) {
+				t.Fatalf("badges raw mismatch:\nexpected %#v\nactual   %#v", tt.raw, msg.BadgesRaw)
+			}
+		})
+	}
 }

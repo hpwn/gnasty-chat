@@ -319,3 +319,94 @@ func TestParseYouTubeBadgesPrefersMetadataVersion(t *testing.T) {
 		t.Fatalf("missing expected badges: %#v", expected)
 	}
 }
+
+func TestBuildMessageBadges(t *testing.T) {
+	cases := []struct {
+		name     string
+		renderer map[string]any
+		expected map[string]string
+	}{
+		{
+			name: "owner badge from icon",
+			renderer: map[string]any{
+				"id":            "msg-owner",
+				"message":       map[string]any{"simpleText": "hello"},
+				"authorName":    map[string]any{"simpleText": "Owner"},
+				"authorBadges":  []any{map[string]any{"liveChatAuthorBadgeRenderer": map[string]any{"icon": map[string]any{"iconType": "OWNER"}}}},
+				"timestampUsec": "1700000000000000",
+			},
+			expected: map[string]string{"owner": ""},
+		},
+		{
+			name: "moderator badge from style",
+			renderer: map[string]any{
+				"id":         "msg-mod",
+				"message":    map[string]any{"simpleText": "hello"},
+				"authorName": map[string]any{"simpleText": "Moderator"},
+				"authorBadgesWithMetadata": []any{
+					map[string]any{"metadataBadgeRenderer": map[string]any{"style": "LIVE_CHAT_MODERATOR", "label": "Moderator"}},
+				},
+				"timestampUsec": "1700000000000000",
+			},
+			expected: map[string]string{"moderator": ""},
+		},
+		{
+			name: "member badge with tenure",
+			renderer: map[string]any{
+				"id":         "msg-member",
+				"message":    map[string]any{"simpleText": "hello"},
+				"authorName": map[string]any{"simpleText": "Member"},
+				"authorBadges": []any{
+					map[string]any{"liveChatAuthorBadgeRenderer": map[string]any{"tooltip": "Member (6 months)"}},
+				},
+				"timestampUsec": "1700000000000000",
+			},
+			expected: map[string]string{"member": "6 months"},
+		},
+		{
+			name: "verified badge from check icon",
+			renderer: map[string]any{
+				"id":         "msg-verified",
+				"message":    map[string]any{"simpleText": "hello"},
+				"authorName": map[string]any{"simpleText": "Verified"},
+				"authorBadgesWithMetadata": []any{
+					map[string]any{"metadataBadgeRenderer": map[string]any{"icon": map[string]any{"iconType": "CHECK"}}},
+				},
+				"timestampUsec": "1700000000000000",
+			},
+			expected: map[string]string{"verified": ""},
+		},
+	}
+
+	for _, tt := range cases {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			msg, ok, reason := buildMessage(tt.renderer)
+			if !ok {
+				t.Fatalf("expected buildMessage to succeed, got reason %q", reason)
+			}
+			if len(msg.Badges) != len(tt.expected) {
+				t.Fatalf("expected %d badges, got %d", len(tt.expected), len(msg.Badges))
+			}
+			for _, badge := range msg.Badges {
+				want, ok := tt.expected[badge.ID]
+				if !ok {
+					t.Fatalf("unexpected badge id %q", badge.ID)
+				}
+				if badge.Platform != "youtube" {
+					t.Fatalf("expected youtube platform, got %q", badge.Platform)
+				}
+				if badge.Version != want {
+					t.Fatalf("badge %s expected version %q, got %q", badge.ID, want, badge.Version)
+				}
+				delete(tt.expected, badge.ID)
+			}
+			if len(tt.expected) != 0 {
+				t.Fatalf("missing expected badges: %#v", tt.expected)
+			}
+			if msg.BadgesRaw == nil || msg.BadgesRaw["youtube"] == nil {
+				t.Fatalf("expected youtube badges raw payload to be set")
+			}
+		})
+	}
+}
