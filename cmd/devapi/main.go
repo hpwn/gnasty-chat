@@ -85,7 +85,7 @@ func main() {
 			BadgesRaw:     req.BadgesRaw,
 			Colour:        req.Colour,
 		}
-		if err := s.Write(msg); err != nil {
+		if err := s.Write(msg, nil); err != nil {
 			http.Error(w, "insert failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}

@@ -6,10 +6,11 @@ import (
 	"time"
 
 	"github.com/you/gnasty-chat/internal/core"
+	"github.com/you/gnasty-chat/internal/ingesttrace"
 )
 
 type Writer interface {
-	Write(core.ChatMessage) error
+	Write(core.ChatMessage, *ingesttrace.MessageTrace) error
 }
 
 type BufferedWriter struct {
@@ -18,10 +19,15 @@ type BufferedWriter struct {
 	flushInterval time.Duration
 
 	mu      sync.Mutex
-	buffer  []core.ChatMessage
+	buffer  []tracedMessage
 	timer   *time.Timer
 	closed  bool
 	lastErr error
+}
+
+type tracedMessage struct {
+	msg   core.ChatMessage
+	trace *ingesttrace.MessageTrace
 }
 
 type BufferedOptions struct {
@@ -41,7 +47,7 @@ func NewBufferedWriter(base Writer, opts BufferedOptions) *BufferedWriter {
 	}
 }
 
-func (b *BufferedWriter) Write(msg core.ChatMessage) error {
+func (b *BufferedWriter) Write(msg core.ChatMessage, trace *ingesttrace.MessageTrace) error {
 	b.mu.Lock()
 	if b.closed {
 		b.mu.Unlock()
@@ -51,7 +57,7 @@ func (b *BufferedWriter) Write(msg core.ChatMessage) error {
 	pendingErr := b.lastErr
 	b.lastErr = nil
 
-	b.buffer = append(b.buffer, msg)
+	b.buffer = append(b.buffer, tracedMessage{msg: msg, trace: trace})
 	if len(b.buffer) == 1 && b.flushInterval > 0 {
 		b.startTimerLocked()
 	}
@@ -61,7 +67,7 @@ func (b *BufferedWriter) Write(msg core.ChatMessage) error {
 		return pendingErr
 	}
 
-	msgs := append([]core.ChatMessage(nil), b.buffer...)
+	msgs := append([]tracedMessage(nil), b.buffer...)
 	b.buffer = b.buffer[:0]
 	b.stopTimerLocked()
 	b.mu.Unlock()
@@ -80,7 +86,7 @@ func (b *BufferedWriter) Close() error {
 	}
 	b.closed = true
 	b.stopTimerLocked()
-	msgs := append([]core.ChatMessage(nil), b.buffer...)
+	msgs := append([]tracedMessage(nil), b.buffer...)
 	b.buffer = nil
 	pendingErr := b.lastErr
 	b.lastErr = nil
@@ -105,7 +111,7 @@ func (b *BufferedWriter) onTimer() {
 		b.mu.Unlock()
 		return
 	}
-	msgs := append([]core.ChatMessage(nil), b.buffer...)
+	msgs := append([]tracedMessage(nil), b.buffer...)
 	b.buffer = b.buffer[:0]
 	b.timer = nil
 	b.mu.Unlock()
@@ -134,9 +140,9 @@ func (b *BufferedWriter) stopTimerLocked() {
 	}
 }
 
-func (b *BufferedWriter) writeAll(msgs []core.ChatMessage) error {
-	for _, msg := range msgs {
-		if err := b.base.Write(msg); err != nil {
+func (b *BufferedWriter) writeAll(msgs []tracedMessage) error {
+	for _, entry := range msgs {
+		if err := b.base.Write(entry.msg, entry.trace); err != nil {
 			return err
 		}
 	}

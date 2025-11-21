@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/you/gnasty-chat/internal/core"
+	"github.com/you/gnasty-chat/internal/ingesttrace"
 )
 
 type recordingWriter struct {
@@ -16,7 +17,7 @@ type recordingWriter struct {
 	calls     int
 }
 
-func (r *recordingWriter) Write(msg core.ChatMessage) error {
+func (r *recordingWriter) Write(msg core.ChatMessage, _ *ingesttrace.MessageTrace) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls++
@@ -42,13 +43,13 @@ func TestBufferedWriterBatchFlush(t *testing.T) {
 		}
 	}()
 
-	if err := bw.Write(core.ChatMessage{ID: "1"}); err != nil {
+	if err := bw.Write(core.ChatMessage{ID: "1"}, nil); err != nil {
 		t.Fatalf("write1: %v", err)
 	}
 	if base.Count() != 0 {
 		t.Fatalf("expected no flush yet")
 	}
-	if err := bw.Write(core.ChatMessage{ID: "2"}); err != nil {
+	if err := bw.Write(core.ChatMessage{ID: "2"}, nil); err != nil {
 		t.Fatalf("write2: %v", err)
 	}
 	if base.Count() != 2 {
@@ -65,7 +66,7 @@ func TestBufferedWriterFlushInterval(t *testing.T) {
 		}
 	}()
 
-	if err := bw.Write(core.ChatMessage{ID: "interval"}); err != nil {
+	if err := bw.Write(core.ChatMessage{ID: "interval"}, nil); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	time.Sleep(50 * time.Millisecond)
@@ -81,7 +82,7 @@ func TestBufferedWriterErrorPropagation(t *testing.T) {
 		_ = bw.Close()
 	}()
 
-	if err := bw.Write(core.ChatMessage{ID: "err"}); err == nil {
+	if err := bw.Write(core.ChatMessage{ID: "err"}, nil); err == nil {
 		t.Fatalf("expected error from underlying writer")
 	}
 }

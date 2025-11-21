@@ -129,7 +129,7 @@ func TestParsePrivmsgBadges(t *testing.T) {
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			msg, ok := parsePrivmsg(context.Background(), tt.line, channel, nil)
+			msg, _, ok, _ := parsePrivmsg(context.Background(), tt.line, channel, nil)
 			if !ok {
 				t.Fatalf("expected parsePrivmsg to succeed")
 			}
@@ -156,7 +156,7 @@ func (stubBadgeResolver) Enrich(_ context.Context, _ string, badges []core.ChatB
 
 func TestParsePrivmsgEnrichesBadges(t *testing.T) {
 	line := "@badges=moderator/1;display-name=User;id=msg-3; :user!user@user.tmi.twitch.tv PRIVMSG #chan :hi"
-	msg, ok := parsePrivmsg(context.Background(), line, "chan", stubBadgeResolver{})
+	msg, _, ok, _ := parsePrivmsg(context.Background(), line, "chan", stubBadgeResolver{})
 	if !ok {
 		t.Fatalf("expected parsePrivmsg to succeed")
 	}
@@ -170,7 +170,7 @@ func TestParsePrivmsgEnrichesBadges(t *testing.T) {
 
 func TestParsePrivmsgEncodesBadgeImages(t *testing.T) {
 	line := "@badges=moderator/1;badge-info=subscriber/6;display-name=User;id=msg-4; :user!user@user.tmi.twitch.tv PRIVMSG #chan :hello"
-	msg, ok := parsePrivmsg(context.Background(), line, "chan", stubBadgeResolver{})
+	msg, _, ok, _ := parsePrivmsg(context.Background(), line, "chan", stubBadgeResolver{})
 	if !ok {
 		t.Fatalf("expected parsePrivmsg to succeed")
 	}
@@ -192,7 +192,7 @@ func TestParsePrivmsgEncodesBadgeImages(t *testing.T) {
 
 func TestParsePrivmsgWithResolverPopulatesImages(t *testing.T) {
 	line := "@badge-info=subscriber/24;badges=subscriber/24,premium/1;display-name=User;id=msg-5; :user!user@user.tmi.twitch.tv PRIVMSG #chan :hi"
-	msg, ok := parsePrivmsg(context.Background(), line, "chan", stubBadgeResolver{})
+	msg, _, ok, _ := parsePrivmsg(context.Background(), line, "chan", stubBadgeResolver{})
 	if !ok {
 		t.Fatalf("expected parsePrivmsg to succeed")
 	}
@@ -219,7 +219,7 @@ func TestParsePrivmsgWithResolverPopulatesImages(t *testing.T) {
 
 func TestParsePrivmsgWithoutResolverKeepsBadges(t *testing.T) {
 	line := "@badge-info=subscriber/12;badges=subscriber/12,partner/1;display-name=User;id=msg-6; :user!user@user.tmi.twitch.tv PRIVMSG #chan :hi"
-	msg, ok := parsePrivmsg(context.Background(), line, "chan", nil)
+	msg, _, ok, _ := parsePrivmsg(context.Background(), line, "chan", nil)
 	if !ok {
 		t.Fatalf("expected parsePrivmsg to succeed")
 	}
@@ -247,7 +247,7 @@ func TestParsePrivmsgBadgeEnrichmentTimeout(t *testing.T) {
 	line := "@badges=moderator/1;display-name=User;id=msg-3; :user!user@user.tmi.twitch.tv PRIVMSG #chan :hi"
 	resolver := &deadlineBadgeResolver{}
 
-	_, ok := parsePrivmsg(context.Background(), line, "chan", resolver)
+	_, _, ok, _ := parsePrivmsg(context.Background(), line, "chan", resolver)
 	if !ok {
 		t.Fatalf("expected parsePrivmsg to succeed")
 	}

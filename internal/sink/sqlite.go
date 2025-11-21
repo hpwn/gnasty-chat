@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/you/gnasty-chat/internal/core"
 	"github.com/you/gnasty-chat/internal/httpapi"
+	"github.com/you/gnasty-chat/internal/ingesttrace"
 )
 
 const schema = `CREATE TABLE IF NOT EXISTS messages (
@@ -279,7 +281,7 @@ func legacyTimestampToMillis(raw string) (int64, error) {
 	return 0, fmt.Errorf("unrecognised legacy timestamp %q", raw)
 }
 
-func (s *SQLiteSink) Write(msg core.ChatMessage) error {
+func (s *SQLiteSink) Write(msg core.ChatMessage, trace *ingesttrace.MessageTrace) error {
 	tsMS := msg.TimestampMS
 	if tsMS == 0 {
 		if !msg.Ts.IsZero() {
@@ -321,11 +323,11 @@ func (s *SQLiteSink) Write(msg core.ChatMessage) error {
 	}
 
 	query := fmt.Sprintf(`INSERT INTO messages (
-        platform, platform_msg_id, ts, username, text, emotes_json, raw_json, badges_json, colour
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) %s;`, conflict)
+platform, platform_msg_id, ts, username, text, emotes_json, raw_json, badges_json, colour
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) %s;`, conflict)
 
 	err := withRetry(func() error {
-		_, execErr := s.db.Exec(query,
+		res, execErr := s.db.Exec(query,
 			platform,
 			platformMsgArg,
 			tsMS,
@@ -336,7 +338,16 @@ func (s *SQLiteSink) Write(msg core.ChatMessage) error {
 			badgesJSON,
 			msg.Colour,
 		)
-		return execErr
+		if execErr != nil {
+			return execErr
+		}
+		rowID, _ := res.LastInsertId()
+		rows, _ := res.RowsAffected()
+		if trace != nil {
+			trace.IncCounter(ingesttrace.StageWrittenToDB)
+			slog.Info("sqlite: wrote message", "trace_id", trace.TraceID, "row_id", rowID, "rows_affected", rows, "platform", platform)
+		}
+		return nil
 	})
 	return errors.Wrap(err, "insert message")
 }

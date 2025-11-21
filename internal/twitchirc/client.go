@@ -8,12 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/you/gnasty-chat/internal/core"
+	"github.com/you/gnasty-chat/internal/ingesttrace"
 )
 
 type Config struct {
@@ -27,7 +29,7 @@ type Config struct {
 	Badges        BadgeResolver
 }
 
-type Handler func(core.ChatMessage)
+type Handler func(core.ChatMessage, *ingesttrace.MessageTrace)
 
 // BadgeResolver enriches parsed Twitch badges with platform-provided metadata
 // such as official artwork URLs.
@@ -286,17 +288,24 @@ func (c *Client) runOnce(ctx context.Context) error {
 			return fmt.Errorf("server requested reconnect")
 		}
 
-		if msg, ok := parsePrivmsg(ctx, line, c.cfg.Channel, c.badges); ok {
+		msg, trace, ok, reason := parsePrivmsg(ctx, line, c.cfg.Channel, c.badges)
+		if ok {
 			total++
 			window++
 			if c.handle != nil {
-				c.handle(msg)
+				c.handle(msg, trace)
 			}
+			continue
+		}
+
+		if reason != "" {
+			dropped := twitchMetrics.incDropped(reason)
+			slog.Info("twitchirc: dropped message", "reason", reason, "count", dropped)
 		}
 	}
 }
 
-func parsePrivmsg(ctx context.Context, line, channel string, badgeResolver BadgeResolver) (core.ChatMessage, bool) {
+func parsePrivmsg(ctx context.Context, line, channel string, badgeResolver BadgeResolver) (core.ChatMessage, *ingesttrace.MessageTrace, bool, string) {
 	original := line
 	rest := line
 	tags := map[string]string{}
@@ -304,7 +313,7 @@ func parsePrivmsg(ctx context.Context, line, channel string, badgeResolver Badge
 	if strings.HasPrefix(rest, "@") {
 		idx := strings.Index(rest, " ")
 		if idx == -1 {
-			return core.ChatMessage{}, false
+			return core.ChatMessage{}, nil, false, "tags_no_space"
 		}
 		tagPart := rest[1:idx]
 		rest = strings.TrimSpace(rest[idx+1:])
@@ -323,34 +332,34 @@ func parsePrivmsg(ctx context.Context, line, channel string, badgeResolver Badge
 	}
 
 	if !strings.HasPrefix(rest, ":") {
-		return core.ChatMessage{}, false
+		return core.ChatMessage{}, nil, false, "missing_prefix"
 	}
 	rest = rest[1:]
 
 	idx := strings.Index(rest, " ")
 	if idx == -1 {
-		return core.ChatMessage{}, false
+		return core.ChatMessage{}, nil, false, "prefix_no_space"
 	}
 	prefix := rest[:idx]
 	rest = strings.TrimSpace(rest[idx+1:])
 
 	if !strings.HasPrefix(strings.ToUpper(rest), "PRIVMSG #") {
-		return core.ChatMessage{}, false
+		return core.ChatMessage{}, nil, false, "not_privmsg"
 	}
 	rest = rest[len("PRIVMSG #"):]
 
 	idx = strings.Index(rest, " ")
 	if idx == -1 {
-		return core.ChatMessage{}, false
+		return core.ChatMessage{}, nil, false, "channel_no_space"
 	}
 	chanName := rest[:idx]
 	rest = strings.TrimSpace(rest[idx+1:])
 	if !strings.EqualFold(chanName, channel) {
-		return core.ChatMessage{}, false
+		return core.ChatMessage{}, nil, false, "channel_mismatch"
 	}
 
 	if !strings.HasPrefix(rest, ":") {
-		return core.ChatMessage{}, false
+		return core.ChatMessage{}, nil, false, "missing_text"
 	}
 	text := rest[1:]
 
@@ -358,6 +367,10 @@ func parsePrivmsg(ctx context.Context, line, channel string, badgeResolver Badge
 	if display := tags["display-name"]; display != "" {
 		user = display
 	}
+
+	trace := ingesttrace.NewTraceFromProviderMessage("Twitch", channel, user, truncateSnippet(text))
+	twitchMetrics.incSeenFromProvider()
+	trace.LogTrace(slog.Default(), "provider_seen")
 
 	ts := time.Now().UTC()
 	if tsStr := tags["tmi-sent-ts"]; tsStr != "" {
@@ -399,7 +412,7 @@ func parsePrivmsg(ctx context.Context, line, channel string, badgeResolver Badge
 		BadgesRaw:     badgesRaw,
 		BadgesJSON:    encodeBadgesPayload(badgeList, badgesRaw),
 		Colour:        tags["color"],
-	}, true
+	}, trace, true, ""
 }
 
 func parseTwitchBadges(tags map[string]string, channel string) ([]core.ChatBadge, core.BadgesRaw) {
@@ -587,4 +600,12 @@ func encodeList(items []string) string {
 		return ""
 	}
 	return string(b)
+}
+
+func truncateSnippet(text string) string {
+	const max = 80
+	if len(text) <= max {
+		return text
+	}
+	return text[:max]
 }
