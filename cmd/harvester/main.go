@@ -19,6 +19,7 @@ import (
 	"github.com/you/gnasty-chat/internal/harvester"
 	httpadmin "github.com/you/gnasty-chat/internal/http"
 	"github.com/you/gnasty-chat/internal/httpapi"
+	"github.com/you/gnasty-chat/internal/ingesttrace"
 	"github.com/you/gnasty-chat/internal/sink"
 	"github.com/you/gnasty-chat/internal/twitch"
 	"github.com/you/gnasty-chat/internal/twitchauth"
@@ -30,7 +31,9 @@ import (
 
 type noopWriter struct{}
 
-func (noopWriter) Write(core.ChatMessage) error { return errors.New("no sink configured") }
+func (noopWriter) Write(core.ChatMessage, *ingesttrace.MessageTrace) error {
+	return errors.New("no sink configured")
+}
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
@@ -330,8 +333,13 @@ func main() {
 			log.Fatal("harvester: twitch-nick is required when twitch-channel/token provided")
 		}
 
-		handler := func(msg core.ChatMessage) {
-			if err := writer.Write(msg); err != nil {
+		handler := func(msg core.ChatMessage, trace *ingesttrace.MessageTrace) {
+			if trace != nil {
+				trace.IncCounter(ingesttrace.StageNormalizedOK)
+				trace.LogTrace(slog.Default(), "normalized_ok")
+			}
+
+			if err := writer.Write(msg, trace); err != nil {
 				log.Printf("harvester: write twitch message: %v", err)
 				if api != nil {
 					api.ReportDBWriteError()
@@ -489,7 +497,7 @@ func main() {
 
 	if ytURL != "" {
 		handler := func(msg core.ChatMessage) {
-			if err := writer.Write(msg); err != nil {
+			if err := writer.Write(msg, nil); err != nil {
 				log.Printf("harvester: write youtube message: %v", err)
 				if api != nil {
 					api.ReportDBWriteError()
@@ -612,7 +620,7 @@ func runTwitchWithReload(
 	ctx context.Context,
 	cancel context.CancelFunc,
 	baseCfg twitchirc.Config,
-	handler func(core.ChatMessage),
+	handler twitchirc.Handler,
 	loader *twitch.FileTokenLoader,
 	state *tokenState,
 	updates <-chan tokenUpdate,

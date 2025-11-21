@@ -47,7 +47,6 @@ func NewTraceFromProviderMessage(platform, channel, user, snippet string) *Messa
 		TraceID:  computeTraceID(platform, channel, user, snippet),
 		counters: make(map[Stage]int64),
 	}
-
 	trace.counters[StageSeenFromProvider] = 1
 	return trace
 }
