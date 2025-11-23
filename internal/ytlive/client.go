@@ -731,12 +731,43 @@ func runsField(m map[string]any, key string) string {
 	var builder strings.Builder
 	for _, run := range runs {
 		if part, ok := run.(map[string]any); ok {
-			if text, ok := part["text"].(string); ok {
+			if text := runText(part); text != "" {
 				builder.WriteString(text)
 			}
 		}
 	}
 	return builder.String()
+}
+
+func runText(part map[string]any) string {
+	if text, ok := part["text"].(string); ok {
+		return text
+	}
+
+	emoji, ok := part["emoji"].(map[string]any)
+	if !ok {
+		return ""
+	}
+
+	if shortcuts, ok := emoji["shortcuts"].([]any); ok && len(shortcuts) > 0 {
+		if first, ok := shortcuts[0].(string); ok {
+			return first
+		}
+	}
+
+	if image, ok := emoji["image"].(map[string]any); ok {
+		if acc := digMap(image, "accessibility", "accessibilityData"); acc != nil {
+			if label := stringField(acc, "label"); label != "" {
+				return label
+			}
+		}
+	}
+
+	if label := stringField(emoji, "emojiId"); label != "" {
+		return label
+	}
+
+	return ""
 }
 
 func timestampField(m map[string]any, key string) time.Time {
