@@ -410,3 +410,63 @@ func TestBuildMessageBadges(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildMessageTextWithEmoji(t *testing.T) {
+	runsToRenderer := func(runs []any) map[string]any {
+		return map[string]any{
+			"id":            "msg-emoji",
+			"timestampUsec": "1700000000000000",
+			"authorName":    map[string]any{"simpleText": "User"},
+			"message": map[string]any{
+				"runs": runs,
+			},
+		}
+	}
+
+	cases := []struct {
+		name     string
+		runs     []any
+		expected string
+	}{
+		{
+			name:     "plain text",
+			runs:     []any{map[string]any{"text": "ELORA plain"}},
+			expected: "ELORA plain",
+		},
+		{
+			name: "mixed text and emoji",
+			runs: []any{
+				map[string]any{"text": "ELORA mix "},
+				map[string]any{"emoji": map[string]any{"shortcuts": []any{":smile:"}}},
+			},
+			expected: "ELORA mix :smile:",
+		},
+		{
+			name: "emoji only with accessibility fallback",
+			runs: []any{
+				map[string]any{"emoji": map[string]any{
+					"emojiId": "grinning",
+					"image": map[string]any{
+						"accessibility": map[string]any{
+							"accessibilityData": map[string]any{"label": "Grinning Face"},
+						},
+					},
+				}},
+			},
+			expected: "Grinning Face",
+		},
+	}
+
+	for _, tt := range cases {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			msg, ok, reason := buildMessage(runsToRenderer(tt.runs))
+			if !ok {
+				t.Fatalf("expected buildMessage to succeed, got reason %q", reason)
+			}
+			if msg.Text != tt.expected {
+				t.Fatalf("expected text %q, got %q", tt.expected, msg.Text)
+			}
+		})
+	}
+}
