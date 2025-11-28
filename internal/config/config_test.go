@@ -15,6 +15,7 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("GNASTY_YT_DUMP_UNHANDLED", "")
 	t.Setenv("GNASTY_YT_POLL_TIMEOUT_SECS", "")
 	t.Setenv("GNASTY_YT_POLL_INTERVAL_MS", "")
+	t.Setenv("GNASTY_YT_DEBUG", "")
 
 	cfg := Load()
 	if !cfg.HasSink("sqlite") {
@@ -41,6 +42,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.YouTube.PollIntervalMS != 10000 {
 		t.Fatalf("expected youtube poll interval default 10000, got %d", cfg.YouTube.PollIntervalMS)
 	}
+	if cfg.YouTube.Debug {
+		t.Fatalf("expected youtube debug default false")
+	}
 }
 
 func TestLoadEnvOverrides(t *testing.T) {
@@ -58,6 +62,7 @@ func TestLoadEnvOverrides(t *testing.T) {
 	t.Setenv("GNASTY_YT_DUMP_UNHANDLED", "true")
 	t.Setenv("GNASTY_YT_POLL_TIMEOUT_SECS", "60")
 	t.Setenv("GNASTY_YT_POLL_INTERVAL_MS", "1500")
+	t.Setenv("GNASTY_YT_DEBUG", "yes")
 
 	cfg := Load()
 	if cfg.Sink.SQLite.Path != "/data/elora.db" {
@@ -102,6 +107,9 @@ func TestLoadEnvOverrides(t *testing.T) {
 	if cfg.YouTube.PollIntervalMS != 1500 {
 		t.Fatalf("expected youtube poll interval override 1500, got %d", cfg.YouTube.PollIntervalMS)
 	}
+	if !cfg.YouTube.Debug {
+		t.Fatalf("expected youtube debug override")
+	}
 }
 
 func TestRedactedSnapshot(t *testing.T) {
@@ -122,7 +130,7 @@ func TestRedactedSnapshot(t *testing.T) {
 			RefreshToken:     "refresh",
 			RefreshTokenFile: "/secrets/refresh",
 		},
-		YouTube: YouTubeConfig{Enabled: true, LiveURL: "https://youtube.test/watch", RetrySeconds: 45, DumpUnhandled: true, PollTimeoutSecs: 30, PollIntervalMS: 7500},
+		YouTube: YouTubeConfig{Enabled: true, LiveURL: "https://youtube.test/watch", RetrySeconds: 45, DumpUnhandled: true, PollTimeoutSecs: 30, PollIntervalMS: 7500, Debug: true},
 	}
 
 	summary := cfg.Summary()
@@ -161,6 +169,9 @@ func TestRedactedSnapshot(t *testing.T) {
 	}
 	if youtubeRaw["poll_interval_ms"].(int) != 7500 {
 		t.Fatalf("expected youtube poll_interval_ms 7500 in redacted snapshot, got %v", youtubeRaw["poll_interval_ms"])
+	}
+	if youtubeRaw["debug"].(bool) != true {
+		t.Fatalf("expected youtube debug true in redacted snapshot")
 	}
 }
 

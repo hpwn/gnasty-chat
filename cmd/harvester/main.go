@@ -543,6 +543,7 @@ func main() {
 					DumpUnhandled:   cfg.YouTube.DumpUnhandled,
 					PollTimeoutSecs: cfg.YouTube.PollTimeoutSecs,
 					PollIntervalMS:  cfg.YouTube.PollIntervalMS,
+					Debug:           cfg.YouTube.Debug,
 				}, handler)
 				go func() {
 					defer close(done)

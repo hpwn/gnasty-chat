@@ -23,6 +23,7 @@ type Config struct {
 	DumpUnhandled   bool
 	PollTimeoutSecs int
 	PollIntervalMS  int
+	Debug           bool
 }
 
 type Handler func(core.ChatMessage)
@@ -125,6 +126,15 @@ func (c *Client) Run(ctx context.Context) error {
 		if c.pollTimeout > 0 {
 			pollCtx, cancel = context.WithTimeout(ctx, c.pollTimeout)
 		}
+		if c.cfg.Debug {
+			log.Printf(
+				"ytlive[debug]: starting poll cont_len=%d poll_delay_ms=%d poll_timeout=%s",
+				len(continuation),
+				c.pollDelay.Milliseconds(),
+				c.pollTimeoutString(),
+			)
+		}
+
 		messages, nextContinuation, timeoutMs, hasTimeout, err := c.poll(pollCtx, apiKey, clientVersion, continuation)
 		if cancel != nil {
 			cancel()
@@ -148,6 +158,16 @@ func (c *Client) Run(ctx context.Context) error {
 			for _, msg := range messages {
 				c.handler(msg)
 			}
+		}
+
+		if c.cfg.Debug {
+			log.Printf(
+				"ytlive[debug]: poll finished messages=%d cont_len=%d timeout_ms=%d has_timeout=%t",
+				len(messages),
+				len(nextContinuation),
+				timeoutMs,
+				hasTimeout,
+			)
 		}
 
 		totalMessages += len(messages)
@@ -175,6 +195,13 @@ func (c *Client) Run(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+}
+
+func (c *Client) pollTimeoutString() string {
+	if c.pollTimeout <= 0 {
+		return "none"
+	}
+	return c.pollTimeout.String()
 }
 
 func (c *Client) bootstrap(ctx context.Context, liveURL string) (apiKey, clientVersion, continuation string, err error) {
@@ -257,6 +284,10 @@ func (c *Client) poll(ctx context.Context, apiKey, clientVersion, continuation s
 		return nil, continuation, 0, false, err
 	}
 
+	if c.cfg.Debug {
+		log.Printf("ytlive[debug]: poll request continuation_len=%d payload_bytes=%d", len(continuation), len(buf))
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(buf))
 	if err != nil {
 		return nil, continuation, 0, false, err
@@ -280,6 +311,15 @@ func (c *Client) poll(ctx context.Context, apiKey, clientVersion, continuation s
 		return nil, continuation, 0, false, err
 	}
 
+	if c.cfg.Debug {
+		log.Printf(
+			"ytlive[debug]: poll response status=%s bytes=%d snippet=%q",
+			resp.Status,
+			len(body),
+			truncateString(string(body), 256),
+		)
+	}
+
 	var payloadResp map[string]any
 	if err := json.Unmarshal(body, &payloadResp); err != nil {
 		return nil, continuation, 0, false, fmt.Errorf("ytlive: decode poll response: %w", err)
@@ -287,6 +327,17 @@ func (c *Client) poll(ctx context.Context, apiKey, clientVersion, continuation s
 
 	continuation, timeout, hasTimeout := extractContinuation(payloadResp)
 	messages, summary, failures, nonChats := extractMessages(payloadResp)
+
+	if c.cfg.Debug {
+		log.Printf(
+			"ytlive[debug]: poll parsed actions=%d chat_messages=%d timeout_ms=%d has_timeout=%t next_cont_len=%d",
+			summary.actions,
+			summary.chatMessages,
+			timeout,
+			hasTimeout,
+			len(continuation),
+		)
+	}
 
 	logPollResults(summary, failures, nonChats, c.cfg.DumpUnhandled)
 
@@ -558,6 +609,16 @@ func marshalTruncated(v map[string]any, limit int) string {
 		data = data[:limit]
 	}
 	return string(data)
+}
+
+func truncateString(s string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(s) <= limit {
+		return s
+	}
+	return s[:limit]
 }
 
 func buildMessage(renderer map[string]any) (core.ChatMessage, bool, string) {
