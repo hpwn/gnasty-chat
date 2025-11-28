@@ -49,6 +49,7 @@ type YouTubeConfig struct {
 	DumpUnhandled   bool
 	PollTimeoutSecs int
 	PollIntervalMS  int
+	Debug           bool `json:"debug"`
 }
 
 const (
@@ -171,6 +172,8 @@ func Load() Config {
 		}
 	}
 
+	cfg.YouTube.Debug = readDebugEnv("GNASTY_YT_DEBUG")
+
 	if !cfg.Twitch.Enabled {
 		cfg.Twitch.Enabled = len(cfg.Twitch.Channels) > 0
 	}
@@ -273,6 +276,19 @@ func readBoolOverride(name string) (bool, bool) {
 	return v, true
 }
 
+func readDebugEnv(name string) bool {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return false
+	}
+	switch strings.ToLower(raw) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
 func envExists(name string) bool {
 	_, ok := os.LookupEnv(name)
 	return ok
@@ -311,6 +327,7 @@ func (c Config) Summary() Summary {
 			DumpUnhandled:   c.YouTube.DumpUnhandled,
 			PollTimeoutSecs: c.YouTube.PollTimeoutSecs,
 			PollIntervalMS:  c.YouTube.PollIntervalMS,
+			Debug:           c.YouTube.Debug,
 		},
 	}
 	return summary
@@ -346,6 +363,7 @@ type YouTubeSummary struct {
 	DumpUnhandled   bool   `json:"dump_unhandled"`
 	PollTimeoutSecs int    `json:"poll_timeout_secs,omitempty"`
 	PollIntervalMS  int    `json:"poll_interval_ms,omitempty"`
+	Debug           bool   `json:"debug"`
 }
 
 func (c Config) Redacted() map[string]any {
@@ -383,6 +401,7 @@ func (c Config) Redacted() map[string]any {
 			"dump_unhandled":    c.YouTube.DumpUnhandled,
 			"poll_timeout_secs": c.YouTube.PollTimeoutSecs,
 			"poll_interval_ms":  c.YouTube.PollIntervalMS,
+			"debug":             c.YouTube.Debug,
 		},
 	}
 	return payload
