@@ -11,9 +11,11 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	"github.com/you/gnasty-chat/internal/core"
 )
@@ -40,6 +42,24 @@ const (
 	defaultLivePollDelay = 3 * time.Second
 	defaultPollTimeout   = 20 * time.Second
 )
+
+type ytEmoteLocation struct {
+	Start int `json:"start"`
+	End   int `json:"end"`
+}
+
+type ytEmoteImage struct {
+	URL    string `json:"url,omitempty"`
+	Width  int    `json:"width,omitempty"`
+	Height int    `json:"height,omitempty"`
+}
+
+type ytEmote struct {
+	ID        string            `json:"id,omitempty"`
+	Name      string            `json:"name,omitempty"`
+	Locations []ytEmoteLocation `json:"locations,omitempty"`
+	Images    []ytEmoteImage    `json:"images,omitempty"`
+}
 
 func New(cfg Config, handler Handler) *Client {
 	httpClient := &http.Client{}
@@ -623,15 +643,24 @@ func truncateString(s string, limit int) string {
 
 func buildMessage(renderer map[string]any) (core.ChatMessage, bool, string) {
 	badges, badgesRaw := parseYouTubeBadges(renderer)
+	text, emotes := messageTextAndEmotes(renderer)
 
 	msg := core.ChatMessage{
 		ID:            stringField(renderer, "id"),
 		PlatformMsgID: stringField(renderer, "id"),
 		Username:      textField(renderer, "authorName"),
 		Platform:      "YouTube",
-		Text:          textField(renderer, "message"),
+		Text:          text,
 		Badges:        badges,
 		BadgesRaw:     badgesRaw,
+	}
+	if len(emotes) > 0 {
+		if data, err := json.Marshal(emotes); err == nil {
+			msg.EmotesJSON = string(data)
+		}
+	}
+	if raw, err := json.Marshal(renderer); err == nil {
+		msg.RawJSON = string(raw)
 	}
 	if msg.Text == "" {
 		return core.ChatMessage{}, false, "empty text"
@@ -644,6 +673,71 @@ func buildMessage(renderer map[string]any) (core.ChatMessage, bool, string) {
 	}
 	msg.Ts = timestampField(renderer, "timestampUsec")
 	return msg, true, ""
+}
+
+func messageTextAndEmotes(renderer map[string]any) (string, []ytEmote) {
+	message, ok := renderer["message"].(map[string]any)
+	if !ok {
+		return "", nil
+	}
+	if runs, ok := message["runs"].([]any); ok {
+		return runsTextAndEmotes(runs)
+	}
+	if s, ok := message["simpleText"].(string); ok {
+		return s, nil
+	}
+	return "", nil
+}
+
+func runsTextAndEmotes(runs []any) (string, []ytEmote) {
+	var (
+		builder strings.Builder
+		emotes  []ytEmote
+		offset  int
+	)
+	for _, run := range runs {
+		part, ok := run.(map[string]any)
+		if !ok {
+			continue
+		}
+		if text, ok := part["text"].(string); ok {
+			builder.WriteString(text)
+			offset += utf16Len(text)
+			continue
+		}
+		emoji, ok := part["emoji"].(map[string]any)
+		if !ok {
+			continue
+		}
+
+		shortcode := emojiShortcode(emoji)
+		if shortcode == "" {
+			if label := emojiAccessibilityLabel(emoji); label != "" {
+				builder.WriteString(label)
+				offset += utf16Len(label)
+			}
+			continue
+		}
+
+		start := offset
+		builder.WriteString(shortcode)
+		offset += utf16Len(shortcode)
+
+		emoteID := stringField(emoji, "emojiId")
+		if emoteID == "" {
+			emoteID = shortcode
+		}
+
+		emotes = append(emotes, ytEmote{
+			ID:   emoteID,
+			Name: shortcode,
+			Locations: []ytEmoteLocation{
+				{Start: start, End: offset},
+			},
+			Images: emojiImages(emoji),
+		})
+	}
+	return builder.String(), emotes
 }
 
 func parseYouTubeBadges(renderer map[string]any) ([]core.ChatBadge, core.BadgesRaw) {
@@ -829,6 +923,104 @@ func runText(part map[string]any) string {
 	}
 
 	return ""
+}
+
+func emojiShortcode(emoji map[string]any) string {
+	if shortcuts, ok := emoji["shortcuts"].([]any); ok && len(shortcuts) > 0 {
+		if first, ok := shortcuts[0].(string); ok {
+			if trimmed := strings.TrimSpace(first); trimmed != "" {
+				return trimmed
+			}
+		}
+	}
+	if label := stringField(emoji, "emojiId"); label != "" {
+		return ":" + label + ":"
+	}
+	return ""
+}
+
+func emojiAccessibilityLabel(emoji map[string]any) string {
+	if image, ok := emoji["image"].(map[string]any); ok {
+		if acc := digMap(image, "accessibility", "accessibilityData"); acc != nil {
+			if label := stringField(acc, "label"); label != "" {
+				return label
+			}
+		}
+	}
+	return ""
+}
+
+func emojiImages(emoji map[string]any) []ytEmoteImage {
+	image, ok := emoji["image"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	raw, ok := image["thumbnails"].([]any)
+	if !ok {
+		return nil
+	}
+	images := make([]ytEmoteImage, 0, len(raw))
+	for _, entry := range raw {
+		thumb, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		url := stringField(thumb, "url")
+		if url == "" {
+			continue
+		}
+		images = append(images, ytEmoteImage{
+			URL:    normalizeImageURL(url),
+			Width:  intField(thumb, "width"),
+			Height: intField(thumb, "height"),
+		})
+	}
+	if len(images) > 1 {
+		sort.SliceStable(images, func(i, j int) bool {
+			return images[i].Width*images[i].Height > images[j].Width*images[j].Height
+		})
+	}
+	return images
+}
+
+func normalizeImageURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if strings.HasPrefix(raw, "//") {
+		return "https:" + raw
+	}
+	if strings.HasPrefix(raw, "http://") {
+		return "https://" + strings.TrimPrefix(raw, "http://")
+	}
+	return raw
+}
+
+func intField(m map[string]any, key string) int {
+	if v, ok := m[key]; ok {
+		switch t := v.(type) {
+		case float64:
+			return int(t)
+		case int:
+			return t
+		case int64:
+			return int(t)
+		case json.Number:
+			if n, err := t.Int64(); err == nil {
+				return int(n)
+			}
+		case string:
+			if n, err := strconv.Atoi(strings.TrimSpace(t)); err == nil {
+				return n
+			}
+		}
+	}
+	return 0
+}
+
+func utf16Len(s string) int {
+	if s == "" {
+		return 0
+	}
+	return len(utf16.Encode([]rune(s)))
 }
 
 func timestampField(m map[string]any, key string) time.Time {

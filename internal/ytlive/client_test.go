@@ -2,6 +2,7 @@ package ytlive
 
 import (
 	"bytes"
+	"encoding/json"
 	"log"
 	"strings"
 	"testing"
@@ -442,7 +443,7 @@ func TestBuildMessageTextWithEmoji(t *testing.T) {
 			expected: "ELORA mix :smile:",
 		},
 		{
-			name: "emoji only with accessibility fallback",
+			name: "emoji only with emojiId fallback",
 			runs: []any{
 				map[string]any{"emoji": map[string]any{
 					"emojiId": "grinning",
@@ -453,7 +454,7 @@ func TestBuildMessageTextWithEmoji(t *testing.T) {
 					},
 				}},
 			},
-			expected: "Grinning Face",
+			expected: ":grinning:",
 		},
 	}
 
@@ -468,5 +469,74 @@ func TestBuildMessageTextWithEmoji(t *testing.T) {
 				t.Fatalf("expected text %q, got %q", tt.expected, msg.Text)
 			}
 		})
+	}
+}
+
+func TestBuildMessageEmotes(t *testing.T) {
+	renderer := map[string]any{
+		"id":            "msg-emotes",
+		"timestampUsec": "1700000000000000",
+		"authorName":    map[string]any{"simpleText": "User"},
+		"message": map[string]any{
+			"runs": []any{
+				map[string]any{"text": "Hi "},
+				map[string]any{"emoji": map[string]any{
+					"emojiId":   "smile",
+					"shortcuts": []any{":smile:"},
+					"image": map[string]any{
+						"thumbnails": []any{
+							map[string]any{"url": "http://example.com/24.png", "width": float64(24), "height": float64(24)},
+							map[string]any{"url": "//example.com/48.png", "width": float64(48), "height": float64(48)},
+						},
+					},
+				}},
+				map[string]any{"text": " there"},
+			},
+		},
+	}
+
+	msg, ok, reason := buildMessage(renderer)
+	if !ok {
+		t.Fatalf("expected buildMessage to succeed, got reason %q", reason)
+	}
+	if msg.Text != "Hi :smile: there" {
+		t.Fatalf("expected text %q, got %q", "Hi :smile: there", msg.Text)
+	}
+	if msg.RawJSON == "" {
+		t.Fatalf("expected RawJSON to be set")
+	}
+	if msg.EmotesJSON == "" {
+		t.Fatalf("expected EmotesJSON to be set")
+	}
+
+	var emotes []ytEmote
+	if err := json.Unmarshal([]byte(msg.EmotesJSON), &emotes); err != nil {
+		t.Fatalf("expected EmotesJSON to parse, got %v", err)
+	}
+	if len(emotes) != 1 {
+		t.Fatalf("expected 1 emote, got %d", len(emotes))
+	}
+	emote := emotes[0]
+	if emote.ID != "smile" {
+		t.Fatalf("expected emote id smile, got %q", emote.ID)
+	}
+	if emote.Name != ":smile:" {
+		t.Fatalf("expected emote name :smile:, got %q", emote.Name)
+	}
+	if len(emote.Locations) != 1 {
+		t.Fatalf("expected 1 location, got %d", len(emote.Locations))
+	}
+	loc := emote.Locations[0]
+	if loc.Start != 3 || loc.End != 10 {
+		t.Fatalf("expected location 3-10, got %d-%d", loc.Start, loc.End)
+	}
+	if len(emote.Images) != 2 {
+		t.Fatalf("expected 2 images, got %d", len(emote.Images))
+	}
+	if emote.Images[0].URL != "https://example.com/48.png" {
+		t.Fatalf("expected largest image first, got %q", emote.Images[0].URL)
+	}
+	if emote.Images[1].URL != "https://example.com/24.png" {
+		t.Fatalf("expected https normalization, got %q", emote.Images[1].URL)
 	}
 }
