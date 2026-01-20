@@ -156,3 +156,58 @@ func TestResolverDisabledWithoutCredentials(t *testing.T) {
 		t.Fatalf("expected passthrough badges without images, got %#v", enriched)
 	}
 }
+
+func TestResolverPrefersChannelBadgesOverGlobal(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.Handle("/oauth2/token", tokenResponder{count: &atomic.Int64{}})
+	mux.HandleFunc("/helix/chat/badges/global", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{
+				{
+					"set_id": "subscriber",
+					"versions": []map[string]any{
+						{"id": "1", "image_url_1x": "https://cdn/global/sub/1x.png"},
+					},
+				},
+			},
+		})
+	})
+	mux.HandleFunc("/helix/chat/badges", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("broadcaster_id") != "1234" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{
+				{
+					"set_id": "subscriber",
+					"versions": []map[string]any{
+						{"id": "1", "image_url_1x": "https://cdn/channel/sub/1x.png"},
+					},
+				},
+			},
+		})
+	})
+	mux.HandleFunc("/helix/users", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"id": "1234"}}})
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	helixBaseURL = srv.URL + "/helix"
+	oauthTokenURL = srv.URL + "/oauth2/token"
+
+	r := &Resolver{ClientID: "client", ClientSecret: "secret", TTL: time.Minute}
+	r.HTTP = srv.Client()
+
+	badges := []core.ChatBadge{{Platform: "twitch", ID: "subscriber", Version: "1"}}
+	enriched := r.Enrich(context.Background(), "channel", badges)
+
+	if len(enriched) != 1 || len(enriched[0].Images) != 1 {
+		t.Fatalf("expected channel badge images, got %#v", enriched)
+	}
+	if enriched[0].Images[0].URL != "https://cdn/channel/sub/1x.png" {
+		t.Fatalf("expected channel image to override global, got %#v", enriched[0].Images)
+	}
+}

@@ -16,7 +16,7 @@ import (
 	"github.com/you/gnasty-chat/internal/core"
 )
 
-const defaultTTL = 20 * time.Minute
+const defaultTTL = 6 * time.Hour
 
 var (
 	helixBaseURL     = "https://api.twitch.tv/helix"
@@ -83,9 +83,10 @@ func (r *Resolver) Enrich(ctx context.Context, channel string, badges []core.Cha
 		return badges
 	}
 
-	channel = strings.TrimSpace(strings.ToLower(channel))
+	channel = strings.TrimSpace(channel)
+	channelKey := strings.ToLower(channel)
 
-	merged := r.lookupBadgeSets(ctx, channel)
+	merged := r.lookupBadgeSets(ctx, channelKey)
 	if len(merged) == 0 {
 		return badges
 	}
@@ -116,7 +117,7 @@ func (r *Resolver) Enrich(ctx context.Context, channel string, badges []core.Cha
 
 	if enrichedCount > 0 {
 		if _, seen := r.enriched.LoadOrStore(channel, struct{}{}); !seen {
-			log.Printf("twitchbadges: enriched %d badges for channel=%s", enrichedCount, channel)
+			log.Printf("twitchbadges: enriched %d badges for channel=%s", enrichedCount, channelKey)
 		}
 	}
 
@@ -157,7 +158,9 @@ func (r *Resolver) lookupBadgeSets(ctx context.Context, channel string) map[stri
 	}
 
 	broadcasterID := ""
-	if cachedID, ok := r.cachedUserID(channel, ttl); ok {
+	if isNumericID(channel) {
+		broadcasterID = channel
+	} else if cachedID, ok := r.cachedUserID(channel, ttl); ok {
 		broadcasterID = cachedID
 	} else if fetched, err := r.lookupUserID(ctx, token, channel); err == nil && fetched != "" {
 		broadcasterID = fetched
@@ -405,4 +408,16 @@ func buildImages(item helixBadgeItem) []core.ChatBadgeImage {
 	add(item.ImageURL2x, 36, "2x")
 	add(item.ImageURL4x, 72, "4x")
 	return images
+}
+
+func isNumericID(value string) bool {
+	if value == "" {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] < '0' || value[i] > '9' {
+			return false
+		}
+	}
+	return true
 }

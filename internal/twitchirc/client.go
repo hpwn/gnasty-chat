@@ -387,7 +387,11 @@ func parsePrivmsg(ctx context.Context, line, channel string, badgeResolver Badge
 	badgeList, badgesRaw := parseTwitchBadges(tags, channel)
 	if badgeResolver != nil {
 		enrichCtx, cancel := context.WithTimeout(ctx, badgeEnrichTimeout)
-		badgeList = badgeResolver.Enrich(enrichCtx, channel, badgeList)
+		resolverChannel := channel
+		if roomID := strings.TrimSpace(tags["room-id"]); roomID != "" {
+			resolverChannel = roomID
+		}
+		badgeList = badgeResolver.Enrich(enrichCtx, resolverChannel, badgeList)
 		cancel()
 	}
 	emotes := splitList(tags["emotes"], "/")
@@ -416,8 +420,12 @@ func parsePrivmsg(ctx context.Context, line, channel string, badgeResolver Badge
 }
 
 func parseTwitchBadges(tags map[string]string, channel string) ([]core.ChatBadge, core.BadgesRaw) {
-	badgeList := parseBadgePairs(tags["badges"], ",")
-	badgeInfo := parseBadgeInfo(tags["badge-info"], ",")
+	rawBadges := tags["badges"]
+	rawBadgeInfo := tags["badge-info"]
+	if rawBadgeInfo == "" {
+		rawBadgeInfo = tags["badge_info"]
+	}
+	badgeList := parseBadgePairs(rawBadges, ",")
 
 	badges := make([]core.ChatBadge, 0, len(badgeList))
 	for _, pair := range badgeList {
@@ -425,9 +433,6 @@ func parseTwitchBadges(tags map[string]string, channel string) ([]core.ChatBadge
 			continue
 		}
 		version := pair.version
-		if info, ok := badgeInfo[pair.id]; ok && info != "" {
-			version = info
-		}
 		if version == "" && pair.id == "broadcaster" {
 			version = channel
 		}
@@ -435,13 +440,13 @@ func parseTwitchBadges(tags map[string]string, channel string) ([]core.ChatBadge
 	}
 
 	var badgesRaw core.BadgesRaw
-	if tags["badges"] != "" || tags["badge-info"] != "" {
+	if rawBadges != "" || rawBadgeInfo != "" {
 		twitchRaw := map[string]string{}
-		if tags["badges"] != "" {
-			twitchRaw["badges"] = tags["badges"]
+		if rawBadges != "" {
+			twitchRaw["badges"] = rawBadges
 		}
-		if tags["badge-info"] != "" {
-			twitchRaw["badge_info"] = tags["badge-info"]
+		if rawBadgeInfo != "" {
+			twitchRaw["badge_info"] = rawBadgeInfo
 		}
 		if len(twitchRaw) > 0 {
 			badgesRaw = core.BadgesRaw{"twitch": twitchRaw}
@@ -481,30 +486,6 @@ func parseBadgePairs(raw, sep string) []badgePair {
 		return nil
 	}
 	return out
-}
-
-func parseBadgeInfo(raw, sep string) map[string]string {
-	if raw == "" {
-		return nil
-	}
-	entries := splitList(raw, sep)
-	if len(entries) == 0 {
-		return nil
-	}
-	info := make(map[string]string, len(entries))
-	for _, entry := range entries {
-		if idx := strings.Index(entry, "/"); idx != -1 {
-			id := strings.TrimSpace(entry[:idx])
-			version := strings.TrimSpace(entry[idx+1:])
-			if id != "" {
-				info[id] = version
-			}
-		}
-	}
-	if len(info) == 0 {
-		return nil
-	}
-	return info
 }
 
 func encodeBadgesPayload(badges []core.ChatBadge, raw core.BadgesRaw) string {

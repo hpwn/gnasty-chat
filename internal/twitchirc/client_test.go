@@ -108,12 +108,12 @@ func TestParsePrivmsgBadges(t *testing.T) {
 		raw      core.BadgesRaw
 	}{
 		{
-			name: "moderator subscriber with info override",
+			name: "moderator subscriber uses badges version",
 			line: "@badge-info=subscriber/24;badges=moderator/1,subscriber/6,partner/1;display-name=User;color=#1E90FF;id=msg-1;" +
 				"tmi-sent-ts=1234567890 :user!user@user.tmi.twitch.tv PRIVMSG #chan :hello world",
 			expected: []core.ChatBadge{
 				{Platform: "twitch", ID: "moderator", Version: "1"},
-				{Platform: "twitch", ID: "subscriber", Version: "24"},
+				{Platform: "twitch", ID: "subscriber", Version: "6"},
 				{Platform: "twitch", ID: "partner", Version: "1"},
 			},
 			raw: core.BadgesRaw{"twitch": map[string]string{"badges": "moderator/1,subscriber/6,partner/1", "badge_info": "subscriber/24"}},
@@ -123,6 +123,16 @@ func TestParsePrivmsgBadges(t *testing.T) {
 			line:     "@badges=broadcaster/;display-name=Streamer;id=msg-2; :streamer!streamer@streamer.tmi.twitch.tv PRIVMSG #chan :hi",
 			expected: []core.ChatBadge{{Platform: "twitch", ID: "broadcaster", Version: channel}},
 			raw:      core.BadgesRaw{"twitch": map[string]string{"badges": "broadcaster/"}},
+		},
+		{
+			name: "subscriber ignores badge-info tenure",
+			line: "@badges=subscriber/12,premium/1;badge-info=subscriber/19;display-name=User;id=msg-7;" +
+				" :user!user@user.tmi.twitch.tv PRIVMSG #chan :hi",
+			expected: []core.ChatBadge{
+				{Platform: "twitch", ID: "subscriber", Version: "12"},
+				{Platform: "twitch", ID: "premium", Version: "1"},
+			},
+			raw: core.BadgesRaw{"twitch": map[string]string{"badges": "subscriber/12,premium/1", "badge_info": "subscriber/19"}},
 		},
 	}
 
@@ -231,6 +241,59 @@ func TestParsePrivmsgWithoutResolverKeepsBadges(t *testing.T) {
 		if badge.Images != nil {
 			t.Fatalf("expected badge %d images to be empty when resolver disabled, got %#v", i, badge.Images)
 		}
+	}
+}
+
+type roomIDBadgeResolver struct {
+	channel string
+}
+
+func (r roomIDBadgeResolver) Enrich(_ context.Context, channel string, badges []core.ChatBadge) []core.ChatBadge {
+	out := make([]core.ChatBadge, len(badges))
+	copy(out, badges)
+	if channel != r.channel {
+		return out
+	}
+	for i := range out {
+		if out[i].ID == "subscriber" && out[i].Version == "12" {
+			out[i].Images = []core.ChatBadgeImage{
+				{URL: "https://static-cdn.jtvnw.net/badges/v1/channel-sub-12-1x.png", Width: 18, Height: 18},
+			}
+		}
+	}
+	return out
+}
+
+func TestParsePrivmsgUsesRoomIDForBadgeResolver(t *testing.T) {
+	line := "@badges=subscriber/12,premium/1;badge-info=subscriber/19;display-name=User;id=msg-8;room-id=1234;" +
+		" :user!user@user.tmi.twitch.tv PRIVMSG #chan :hi"
+	resolver := roomIDBadgeResolver{channel: "1234"}
+
+	msg, _, ok, _ := parsePrivmsg(context.Background(), line, "chan", resolver)
+	if !ok {
+		t.Fatalf("expected parsePrivmsg to succeed")
+	}
+	if len(msg.Badges) != 2 {
+		t.Fatalf("expected two badges, got %d", len(msg.Badges))
+	}
+	if msg.Badges[0].ID != "subscriber" || msg.Badges[0].Version != "12" {
+		t.Fatalf("unexpected subscriber badge: %#v", msg.Badges[0])
+	}
+	if len(msg.Badges[0].Images) == 0 {
+		t.Fatalf("expected subscriber badge images to be populated")
+	}
+	if msg.Badges[0].Images[0].URL != "https://static-cdn.jtvnw.net/badges/v1/channel-sub-12-1x.png" {
+		t.Fatalf("unexpected subscriber image url: %#v", msg.Badges[0].Images)
+	}
+
+	var payload struct {
+		Badges []core.ChatBadge `json:"badges"`
+	}
+	if err := json.Unmarshal([]byte(msg.BadgesJSON), &payload); err != nil {
+		t.Fatalf("failed to decode badges json: %v", err)
+	}
+	if len(payload.Badges) < 1 || len(payload.Badges[0].Images) == 0 {
+		t.Fatalf("expected serialized subscriber badge images, got %#v", payload.Badges)
 	}
 }
 
