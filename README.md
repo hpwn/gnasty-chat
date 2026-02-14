@@ -164,6 +164,16 @@ ytlive: live stream changed to https://www.youtube.com/watch?v=abc123
 ytlive: channel https://youtube.com/@yourchannel/live not live, backing off 30s
 ```
 
+### Twitch drop logging
+
+Non-`PRIVMSG` Twitch IRC traffic is dropped intentionally. By default, gnasty-chat
+logs a rate-limited summary (every ~5 seconds) with counts by IRC command plus one
+sanitized sample per command, instead of emitting one line per dropped message.
+
+Set `GNASTY_TWITCH_DEBUG_DROPS=1` to enable per-drop debug logs. Per-drop and
+summary logs redact token-like content (including `oauth:` values and `PASS`-style
+auth lines) before output.
+
 Additional HTTP controls:
 
 | Flag | Default | Description |

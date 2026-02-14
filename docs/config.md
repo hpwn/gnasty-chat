@@ -24,6 +24,7 @@ plain text; instead they are replaced with `***REDACTED*** (len=N)` to show the 
 | `GNASTY_TWITCH_REFRESH_TOKEN` | string | _(empty)_ | `refresh-xxxx` | Redacted |
 | `GNASTY_TWITCH_REFRESH_TOKEN_FILE` | filesystem path | _(empty)_ | `/secrets/twitch_refresh` | Logged verbatim |
 | `GNASTY_TWITCH_TLS` | boolean | `true` | `false` | Logged verbatim |
+| `GNASTY_TWITCH_DEBUG_DROPS` | boolean-ish (`1/true/yes`) | `false` | `1` | Logged verbatim |
 | `TWITCH_CHANNEL` | string | _(empty)_ | `elora` | Logged verbatim |
 | `TWITCH_NICK` | string | _(empty)_ | `elora_bot` | Logged verbatim |
 | `TWITCH_TOKEN` | string | _(empty)_ | `oauth:xxxx` | Redacted |
@@ -39,6 +40,10 @@ plain text; instead they are replaced with `***REDACTED*** (len=N)` to show the 
 
 Values listed as "Redacted" are replaced with `***REDACTED*** (len=N)` in logs and the `/configz`
 endpoint. All other values are emitted verbatim.
+
+`GNASTY_TWITCH_DEBUG_DROPS` enables per-drop Twitch IRC diagnostics at debug level. When disabled,
+the harvester emits only rate-limited drop summaries (grouped by drop reason and IRC command) to
+avoid startup log spam.
 
 `GNASTY_YT_URL` accepts both the classic watch URL
 (`https://www.youtube.com/watch?v=...`) and the shorter channel handle form

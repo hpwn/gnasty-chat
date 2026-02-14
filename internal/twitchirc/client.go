@@ -221,6 +221,8 @@ func (c *Client) runOnce(ctx context.Context) error {
 	log.Printf("twitchirc: joined #%s as %s", c.cfg.Channel, c.cfg.Nick)
 
 	reader := rw.Reader
+	droppedLog := newDropLogger(time.Now(), readTwitchDropDebugEnv(), dropSummaryInterval)
+	defer droppedLog.flush(time.Now())
 	var (
 		total        int
 		window       int
@@ -299,8 +301,8 @@ func (c *Client) runOnce(ctx context.Context) error {
 		}
 
 		if reason != "" {
-			dropped := twitchMetrics.incDropped(reason)
-			slog.Info("twitchirc: dropped message", "reason", reason, "count", dropped)
+			twitchMetrics.incDropped(reason)
+			droppedLog.note(now, reason, line)
 		}
 	}
 }
