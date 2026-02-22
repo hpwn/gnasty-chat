@@ -27,6 +27,15 @@ type Config struct {
 	RefreshNow    func(context.Context) (string, error)
 	Addr          string
 	Badges        BadgeResolver
+	Runtime       func() RuntimeOptions
+}
+
+type RuntimeOptions struct {
+	DebugDrops        bool
+	BackoffMin        time.Duration
+	BackoffMax        time.Duration
+	RefreshBackoffMin time.Duration
+	RefreshBackoffMax time.Duration
 }
 
 type Handler func(core.ChatMessage, *ingesttrace.MessageTrace)
@@ -56,8 +65,9 @@ func (c *Client) Run(ctx context.Context) error {
 		return errors.New("twitchirc: channel and nick are required")
 	}
 
-	backoff := time.Second
-	refreshBackoff := time.Second
+	runtime := c.runtimeOptions()
+	backoff := runtime.BackoffMin
+	refreshBackoff := runtime.RefreshBackoffMin
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -69,6 +79,7 @@ func (c *Client) Run(ctx context.Context) error {
 			}
 
 			if errors.Is(err, errAuthFailed) {
+				runtime = c.runtimeOptions()
 				if c.cfg.RefreshNow == nil {
 					log.Printf("twitchirc: authentication failed; retrying in %s", backoff)
 					timer := time.NewTimer(backoff)
@@ -78,12 +89,7 @@ func (c *Client) Run(ctx context.Context) error {
 						return ctx.Err()
 					case <-timer.C:
 					}
-					if backoff < 60*time.Second {
-						backoff *= 2
-						if backoff > 60*time.Second {
-							backoff = 60 * time.Second
-						}
-					}
+					backoff = nextBackoff(backoff, runtime.BackoffMin, runtime.BackoffMax)
 					continue
 				}
 
@@ -95,8 +101,8 @@ func (c *Client) Run(ctx context.Context) error {
 
 					_, refreshErr := c.cfg.RefreshNow(ctx)
 					if refreshErr == nil {
-						refreshBackoff = time.Second
-						backoff = time.Second
+						backoff = runtime.BackoffMin
+						refreshBackoff = runtime.RefreshBackoffMin
 						break
 					}
 
@@ -113,12 +119,7 @@ func (c *Client) Run(ctx context.Context) error {
 					case <-timer.C:
 					}
 
-					if refreshBackoff < time.Minute {
-						refreshBackoff *= 2
-						if refreshBackoff > time.Minute {
-							refreshBackoff = time.Minute
-						}
-					}
+					refreshBackoff = nextBackoff(refreshBackoff, runtime.RefreshBackoffMin, runtime.RefreshBackoffMax)
 				}
 
 				continue
@@ -134,17 +135,14 @@ func (c *Client) Run(ctx context.Context) error {
 			case <-timer.C:
 			}
 
-			if backoff < 60*time.Second {
-				backoff *= 2
-				if backoff > 60*time.Second {
-					backoff = 60 * time.Second
-				}
-			}
+			runtime = c.runtimeOptions()
+			backoff = nextBackoff(backoff, runtime.BackoffMin, runtime.BackoffMax)
 			continue
 		}
 
-		backoff = time.Second
-		refreshBackoff = time.Second
+		runtime = c.runtimeOptions()
+		backoff = runtime.BackoffMin
+		refreshBackoff = runtime.RefreshBackoffMin
 	}
 }
 
@@ -221,7 +219,7 @@ func (c *Client) runOnce(ctx context.Context) error {
 	log.Printf("twitchirc: joined #%s as %s", c.cfg.Channel, c.cfg.Nick)
 
 	reader := rw.Reader
-	droppedLog := newDropLogger(time.Now(), readTwitchDropDebugEnv(), dropSummaryInterval)
+	droppedLog := newDropLogger(time.Now(), c.runtimeOptions().DebugDrops, dropSummaryInterval)
 	defer droppedLog.flush(time.Now())
 	var (
 		total        int
@@ -305,6 +303,52 @@ func (c *Client) runOnce(ctx context.Context) error {
 			droppedLog.note(now, reason, line)
 		}
 	}
+}
+
+func (c *Client) runtimeOptions() RuntimeOptions {
+	if c.cfg.Runtime != nil {
+		opts := c.cfg.Runtime()
+		if opts.BackoffMin <= 0 {
+			opts.BackoffMin = time.Second
+		}
+		if opts.BackoffMax < opts.BackoffMin {
+			opts.BackoffMax = opts.BackoffMin
+		}
+		if opts.RefreshBackoffMin <= 0 {
+			opts.RefreshBackoffMin = time.Second
+		}
+		if opts.RefreshBackoffMax < opts.RefreshBackoffMin {
+			opts.RefreshBackoffMax = opts.RefreshBackoffMin
+		}
+		return opts
+	}
+	return RuntimeOptions{
+		DebugDrops:        readTwitchDropDebugEnv(),
+		BackoffMin:        time.Second,
+		BackoffMax:        60 * time.Second,
+		RefreshBackoffMin: time.Second,
+		RefreshBackoffMax: time.Minute,
+	}
+}
+
+func nextBackoff(current, min, max time.Duration) time.Duration {
+	if min <= 0 {
+		min = time.Second
+	}
+	if max < min {
+		max = min
+	}
+	if current <= 0 {
+		return min
+	}
+	next := current * 2
+	if next < min {
+		next = min
+	}
+	if next > max {
+		next = max
+	}
+	return next
 }
 
 func parsePrivmsg(ctx context.Context, line, channel string, badgeResolver BadgeResolver) (core.ChatMessage, *ingesttrace.MessageTrace, bool, string) {

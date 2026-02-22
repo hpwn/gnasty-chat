@@ -150,21 +150,22 @@ func main() {
 	if len(cfg.Twitch.Channels) > 0 {
 		cfg.Twitch.Enabled = true
 	}
+	runtimeSettings := harvester.NewRuntimeSettingsFromConfig(cfg)
 
 	dbPath = cfg.Sink.SQLite.Path
 	if len(cfg.Sinks) == 0 {
 		log.Printf("harvester: no sinks configured; supported sinks: sqlite")
 	}
 
-	if len(cfg.Twitch.Channels) > 0 {
-		twChannel = cfg.Twitch.Channels[0]
+	if runtimeSettings.Twitch.Channel != "" {
+		twChannel = runtimeSettings.Twitch.Channel
 		if len(cfg.Twitch.Channels) > 1 {
 			log.Printf("harvester: twitch: multiple channels configured; using %s", twChannel)
 		}
 	} else {
 		twChannel = ""
 	}
-	twNick = cfg.Twitch.Nick
+	twNick = runtimeSettings.Twitch.Nick
 	twToken = cfg.Twitch.Token
 	twTokenFile = cfg.Twitch.TokenFile
 	twClientID = cfg.Twitch.ClientID
@@ -179,17 +180,16 @@ func main() {
 			twRefreshToken = strings.TrimSpace(string(data))
 		}
 	}
-	twTLS = cfg.Twitch.TLS
-	ytURL = cfg.YouTube.LiveURL
+	twTLS = runtimeSettings.Twitch.TLS
+	ytURL = runtimeSettings.YouTube.URL
 	log.Printf(
 		"harvester: youtube settings url=%s dump_unhandled=%t poll_timeout_secs=%d poll_interval_ms=%d",
 		ytURL,
-		cfg.YouTube.DumpUnhandled,
-		cfg.YouTube.PollTimeoutSecs,
-		cfg.YouTube.PollIntervalMS,
+		runtimeSettings.YouTube.DumpUnhandled,
+		runtimeSettings.YouTube.PollTimeoutSecs,
+		runtimeSettings.YouTube.PollIntervalMS,
 	)
 
-	configSnapshot := cfg.Redacted()
 	log.Printf("%s", cfg.SummaryJSON())
 
 	tokenFiles := twitchauth.TokenFiles{
@@ -217,7 +217,7 @@ func main() {
 	if refreshMgr != nil {
 		refreshUpdater = refreshMgr.SetRefreshToken
 	}
-	har := harvester.New(tokenFiles, nil, refreshUpdater)
+	har := harvester.New(tokenFiles, nil, refreshUpdater, runtimeSettings)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -292,7 +292,40 @@ func main() {
 				EnableAccessLog: httpAccessLog,
 				EnablePprof:     httpPprof,
 				Build:           build,
-				ConfigSnapshot:  configSnapshot,
+				ConfigSnapshot:  cfg.Redacted(),
+				ConfigSnapshotFunc: func() map[string]any {
+					snapshot := cfg.Redacted()
+					runtime := har.RuntimeSettings()
+					snapshot["sinks"] = append([]string(nil), runtime.Sinks.Enabled...)
+					if sinkCfg, ok := snapshot["sink"].(map[string]any); ok {
+						sinkCfg["batch_size"] = runtime.Sinks.BatchSize
+						sinkCfg["flush_ms"] = runtime.Sinks.FlushMaxMS
+					}
+					if twCfg, ok := snapshot["twitch"].(map[string]any); ok {
+						if runtime.Twitch.Channel == "" {
+							twCfg["channels"] = []string{}
+						} else {
+							twCfg["channels"] = []string{runtime.Twitch.Channel}
+						}
+						twCfg["nick"] = runtime.Twitch.Nick
+						twCfg["tls"] = runtime.Twitch.TLS
+						twCfg["debug_drops"] = runtime.Twitch.DebugDrops
+						twCfg["backoff_min_ms"] = runtime.Twitch.BackoffMinMS
+						twCfg["backoff_max_ms"] = runtime.Twitch.BackoffMaxMS
+						twCfg["refresh_backoff_min_ms"] = runtime.Twitch.RefreshBackoffMinMS
+						twCfg["refresh_backoff_max_ms"] = runtime.Twitch.RefreshBackoffMaxMS
+					}
+					if ytCfg, ok := snapshot["youtube"].(map[string]any); ok {
+						ytCfg["live_url"] = runtime.YouTube.URL
+						ytCfg["enabled"] = strings.TrimSpace(runtime.YouTube.URL) != ""
+						ytCfg["retry_seconds"] = runtime.YouTube.RetrySeconds
+						ytCfg["dump_unhandled"] = runtime.YouTube.DumpUnhandled
+						ytCfg["poll_timeout_secs"] = runtime.YouTube.PollTimeoutSecs
+						ytCfg["poll_interval_ms"] = runtime.YouTube.PollIntervalMS
+						ytCfg["debug"] = runtime.YouTube.Debug
+					}
+					return snapshot
+				},
 			})
 			if har != nil {
 				admin := httpadmin.New(har)
@@ -308,12 +341,19 @@ func main() {
 		}
 	}
 
-	if sinkDB != nil && (cfg.Batch() > 1 || cfg.FlushInterval() > 0) {
+	if sinkDB != nil {
 		buffered = sink.NewBufferedWriter(writer, sink.BufferedOptions{
-			BatchSize:     cfg.Batch(),
-			FlushInterval: cfg.FlushInterval(),
+			BatchSize:     runtimeSettings.Sinks.BatchSize,
+			FlushInterval: time.Duration(runtimeSettings.Sinks.FlushMaxMS) * time.Millisecond,
 		})
 		writer = buffered
+		har.SetSinkRuntimeApplier(func(settings harvester.SinkRuntimeSettings) (bool, error) {
+			changed := buffered.UpdateOptions(sink.BufferedOptions{
+				BatchSize:     settings.BatchSize,
+				FlushInterval: time.Duration(settings.FlushMaxMS) * time.Millisecond,
+			})
+			return changed, nil
+		})
 	}
 
 	if buffered != nil {
@@ -353,7 +393,7 @@ func main() {
 			token  string
 			loader *twitch.FileTokenLoader
 		)
-		tokenUpdates := make(chan tokenUpdate, 4)
+		twitchUpdates := make(chan twitchUpdate, 4)
 
 		if tokenFilePath != "" {
 			loader = twitch.NewFileTokenLoader(tokenFilePath)
@@ -459,7 +499,7 @@ func main() {
 					if loader != nil {
 						loader.SetCached(normalized)
 					}
-					sendTokenUpdate(tokenUpdates, tokenUpdate{Token: normalized, Force: true, Reason: "refresh"})
+					sendTwitchUpdate(twitchUpdates, twitchUpdate{Token: normalized, Force: true, Reason: "refresh"})
 					return normalized, nil
 				}
 
@@ -472,12 +512,24 @@ func main() {
 					if loader != nil {
 						loader.SetCached(normalized)
 					}
-					sendTokenUpdate(tokenUpdates, tokenUpdate{Token: normalized, Force: true, Reason: "refresh"})
+					sendTwitchUpdate(twitchUpdates, twitchUpdate{Token: normalized, Force: true, Reason: "refresh"})
 				})
 			}
 
-			reloader := &twitchReloader{updates: tokenUpdates, nick: nick}
+			reloader := &twitchReloader{
+				updates:             twitchUpdates,
+				nick:                nick,
+				channel:             channel,
+				useTLS:              twTLS,
+				debugDrops:          runtimeSettings.Twitch.DebugDrops,
+				backoffMinMS:        runtimeSettings.Twitch.BackoffMinMS,
+				backoffMaxMS:        runtimeSettings.Twitch.BackoffMaxMS,
+				refreshBackoffMinMS: runtimeSettings.Twitch.RefreshBackoffMinMS,
+				refreshBackoffMaxMS: runtimeSettings.Twitch.RefreshBackoffMaxMS,
+			}
+			cfg.Runtime = reloader.RuntimeOptions
 			har.SetTwitchConn(reloader)
+			har.SetTwitchRuntimeApplier(reloader.ApplyRuntime)
 
 			if tokenFilePath != "" {
 				watchPaths := []string{tokenFilePath}
@@ -490,12 +542,12 @@ func main() {
 			}
 
 			started++
-			go runTwitchWithReload(ctx, cancel, cfg, handler, loader, state, tokenUpdates)
+			go runTwitchWithReload(ctx, cancel, cfg, handler, loader, state, twitchUpdates)
 			log.Printf("harvester: twitch receiver started for #%s", channel)
 		}
 	}
 
-	if ytURL != "" {
+	{
 		handler := func(msg core.ChatMessage) {
 			if err := writer.Write(msg, nil); err != nil {
 				log.Printf("harvester: write youtube message: %v", err)
@@ -506,19 +558,23 @@ func main() {
 		}
 
 		resolver := ytlive.NewResolver(nil)
-		retrySeconds := cfg.YouTube.RetrySeconds
-		if retrySeconds <= 0 {
-			retrySeconds = 30
+		ytSwitcher := newYouTubeSwitcher(runtimeSettings.YouTube)
+		har.SetYouTubeRuntimeApplier(ytSwitcher.ApplyRuntime)
+		if strings.TrimSpace(runtimeSettings.YouTube.URL) != "" {
+			started++
 		}
-		retryDelay := time.Duration(retrySeconds) * time.Second
-
-		started++
 		go func() {
 			var (
 				currentCancel context.CancelFunc
 				currentDone   <-chan struct{}
 				currentWatch  string
+				target        = runtimeSettings.YouTube
 			)
+
+			retryDelay := time.Duration(target.RetrySeconds) * time.Second
+			if retryDelay <= 0 {
+				retryDelay = 30 * time.Second
+			}
 
 			stopPoller := func() {
 				if currentCancel == nil {
@@ -540,10 +596,10 @@ func main() {
 				done := make(chan struct{})
 				client := ytlive.New(ytlive.Config{
 					LiveURL:         watchURL,
-					DumpUnhandled:   cfg.YouTube.DumpUnhandled,
-					PollTimeoutSecs: cfg.YouTube.PollTimeoutSecs,
-					PollIntervalMS:  cfg.YouTube.PollIntervalMS,
-					Debug:           cfg.YouTube.Debug,
+					DumpUnhandled:   target.DumpUnhandled,
+					PollTimeoutSecs: target.PollTimeoutSecs,
+					PollIntervalMS:  target.PollIntervalMS,
+					Debug:           target.Debug,
 				}, handler)
 				go func() {
 					defer close(done)
@@ -562,14 +618,80 @@ func main() {
 					return
 				}
 
-				res, err := resolver.Resolve(ctx, ytURL)
+				if strings.TrimSpace(target.URL) == "" {
+					stopPoller()
+					timer := time.NewTimer(time.Second)
+					select {
+					case <-ctx.Done():
+						timer.Stop()
+						return
+					case next := <-ytSwitcher.Updates():
+						timer.Stop()
+						if ytSwitcher.Apply(next) {
+							target = next
+							retryDelay = time.Duration(target.RetrySeconds) * time.Second
+							if retryDelay <= 0 {
+								retryDelay = 30 * time.Second
+							}
+						}
+						continue
+					case <-timer.C:
+						continue
+					}
+				}
+
+				resolveCtx, resolveCancel := context.WithCancel(ctx)
+				resultCh := make(chan struct {
+					result ytlive.ResolveResult
+					err    error
+				}, 1)
+				go func(url string) {
+					res, err := resolver.Resolve(resolveCtx, url)
+					resultCh <- struct {
+						result ytlive.ResolveResult
+						err    error
+					}{result: res, err: err}
+				}(target.URL)
+
+				var (
+					res ytlive.ResolveResult
+					err error
+				)
+				select {
+				case <-ctx.Done():
+					resolveCancel()
+					return
+				case next := <-ytSwitcher.Updates():
+					resolveCancel()
+					if ytSwitcher.Apply(next) {
+						oldURL := target.URL
+						target = next
+						retryDelay = time.Duration(target.RetrySeconds) * time.Second
+						if retryDelay <= 0 {
+							retryDelay = 30 * time.Second
+						}
+						if oldURL != target.URL {
+							stopPoller()
+							log.Printf("youtube: switch url %q -> %q", oldURL, target.URL)
+						} else if currentWatch != "" {
+							startPoller(currentWatch)
+							log.Printf("youtube: polling settings updated at runtime")
+						}
+					}
+					continue
+				case resolved := <-resultCh:
+					resolveCancel()
+					res = resolved.result
+					err = resolved.err
+				}
+
 				if err != nil {
 					log.Printf("ytlive: resolve error: %v", err)
 				} else {
 					log.Printf("ytlive: resolved watch=%s chat=%s live=%t", res.WatchURL, res.ChatURL, res.Live)
 					if !res.Live {
 						stopPoller()
-						log.Printf("ytlive: channel %s not live, backing off %s", ytURL, retryDelay)
+						log.Printf("ytlive: channel %s not live, backing off %s", target.URL, retryDelay)
 					} else if res.WatchURL != "" {
 						if currentWatch != res.WatchURL {
 							if currentWatch == "" {
@@ -591,11 +713,29 @@ func main() {
 				case <-ctx.Done():
 					timer.Stop()
 					return
+				case next := <-ytSwitcher.Updates():
+					timer.Stop()
+					if ytSwitcher.Apply(next) {
+						oldURL := target.URL
+						target = next
+						retryDelay = time.Duration(target.RetrySeconds) * time.Second
+						if retryDelay <= 0 {
+							retryDelay = 30 * time.Second
+						}
+						if oldURL != target.URL {
+							stopPoller()
+							log.Printf("youtube: switch url %q -> %q", oldURL, target.URL)
+						} else if currentWatch != "" {
+							startPoller(currentWatch)
+							log.Printf("youtube: polling settings updated at runtime")
+						}
+					}
+					continue
 				case <-timer.C:
 				}
 			}
 		}()
-		log.Printf("harvester: youtube resolver started for %s", ytURL)
+		log.Printf("harvester: youtube resolver supervisor started (url=%s)", ytURL)
 	}
 
 	if started == 0 {
@@ -624,7 +764,7 @@ func runTwitchWithReload(
 	handler twitchirc.Handler,
 	loader *twitch.FileTokenLoader,
 	state *tokenState,
-	updates <-chan tokenUpdate,
+	updates <-chan twitchUpdate,
 ) {
 	startClient := func(cfg twitchirc.Config) (context.CancelFunc, <-chan struct{}) {
 		runCtx, runCancel := context.WithCancel(ctx)
@@ -685,19 +825,27 @@ func runTwitchWithReload(
 				continue
 			}
 
-			applyTokenUpdate(tokenUpdate{Token: token, Force: true, Reason: "file"}, loader, state, &cfg, &cancelCurrent, &doneCurrent, startClient)
+			applyTwitchUpdate(twitchUpdate{Token: token, Force: true, Reason: "file"}, loader, state, &cfg, &cancelCurrent, &doneCurrent, startClient)
 		case upd := <-updates:
 			if updates == nil {
 				continue
 			}
-			applyTokenUpdate(upd, loader, state, &cfg, &cancelCurrent, &doneCurrent, startClient)
+			applyTwitchUpdate(upd, loader, state, &cfg, &cancelCurrent, &doneCurrent, startClient)
 		}
 	}
 }
 
 type twitchReloader struct {
-	updates chan tokenUpdate
-	nick    string
+	mu                  sync.RWMutex
+	updates             chan twitchUpdate
+	nick                string
+	channel             string
+	useTLS              bool
+	debugDrops          bool
+	backoffMinMS        int
+	backoffMaxMS        int
+	refreshBackoffMinMS int
+	refreshBackoffMaxMS int
 }
 
 func (r *twitchReloader) Reconnect(access string) error {
@@ -711,8 +859,81 @@ func (r *twitchReloader) Reconnect(access string) error {
 	if token == "" {
 		return errors.New("twitch: empty token")
 	}
-	sendTokenUpdate(r.updates, tokenUpdate{Token: token, Force: true, Reason: "manual"})
+	sendTwitchUpdate(r.updates, twitchUpdate{Token: token, Force: true, Reason: "manual"})
 	return nil
+}
+
+func (r *twitchReloader) ApplyRuntime(settings harvester.TwitchRuntimeSettings) (bool, error) {
+	if r == nil {
+		return false, errors.New("twitch reloader unavailable")
+	}
+	if r.updates == nil {
+		return false, errors.New("twitch reload channel unavailable")
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	changed := false
+	upd := twitchUpdate{Force: true, Reason: "runtime_config"}
+
+	if r.channel != settings.Channel {
+		old := r.channel
+		r.channel = settings.Channel
+		upd.Channel = settings.Channel
+		changed = true
+		log.Printf("twitch: switch channel %q -> %q", old, settings.Channel)
+	}
+	if settings.Nick != "" && r.nick != settings.Nick {
+		r.nick = settings.Nick
+		upd.Nick = settings.Nick
+		changed = true
+	}
+	if r.useTLS != settings.TLS {
+		r.useTLS = settings.TLS
+		upd.UseTLS = &settings.TLS
+		changed = true
+	}
+	if r.debugDrops != settings.DebugDrops {
+		r.debugDrops = settings.DebugDrops
+		upd.DebugDrops = &settings.DebugDrops
+		changed = true
+	}
+	if r.backoffMinMS != settings.BackoffMinMS {
+		r.backoffMinMS = settings.BackoffMinMS
+		changed = true
+	}
+	if r.backoffMaxMS != settings.BackoffMaxMS {
+		r.backoffMaxMS = settings.BackoffMaxMS
+		changed = true
+	}
+	if r.refreshBackoffMinMS != settings.RefreshBackoffMinMS {
+		r.refreshBackoffMinMS = settings.RefreshBackoffMinMS
+		changed = true
+	}
+	if r.refreshBackoffMaxMS != settings.RefreshBackoffMaxMS {
+		r.refreshBackoffMaxMS = settings.RefreshBackoffMaxMS
+		changed = true
+	}
+	if changed && (upd.Channel != "" || upd.Nick != "" || upd.UseTLS != nil || upd.DebugDrops != nil) {
+		sendTwitchUpdate(r.updates, upd)
+	}
+	return changed, nil
+}
+
+func (r *twitchReloader) RuntimeOptions() twitchirc.RuntimeOptions {
+	if r == nil {
+		return twitchirc.RuntimeOptions{}
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return twitchirc.RuntimeOptions{
+		DebugDrops:        r.debugDrops,
+		BackoffMin:        time.Duration(r.backoffMinMS) * time.Millisecond,
+		BackoffMax:        time.Duration(r.backoffMaxMS) * time.Millisecond,
+		RefreshBackoffMin: time.Duration(r.refreshBackoffMinMS) * time.Millisecond,
+		RefreshBackoffMax: time.Duration(r.refreshBackoffMaxMS) * time.Millisecond,
+	}
 }
 
 func (r *twitchReloader) JoinedNick() string {
@@ -722,10 +943,14 @@ func (r *twitchReloader) JoinedNick() string {
 	return r.nick
 }
 
-type tokenUpdate struct {
-	Token  string
-	Force  bool
-	Reason string
+type twitchUpdate struct {
+	Token      string
+	Channel    string
+	Nick       string
+	UseTLS     *bool
+	DebugDrops *bool
+	Force      bool
+	Reason     string
 }
 
 type tokenState struct {
@@ -757,7 +982,7 @@ func (s *tokenState) Set(token string) bool {
 	return true
 }
 
-func sendTokenUpdate(ch chan tokenUpdate, upd tokenUpdate) {
+func sendTwitchUpdate(ch chan twitchUpdate, upd twitchUpdate) {
 	if ch == nil {
 		return
 	}
@@ -778,8 +1003,8 @@ func sendTokenUpdate(ch chan tokenUpdate, upd tokenUpdate) {
 	}
 }
 
-func applyTokenUpdate(
-	upd tokenUpdate,
+func applyTwitchUpdate(
+	upd twitchUpdate,
 	loader *twitch.FileTokenLoader,
 	state *tokenState,
 	cfg *twitchirc.Config,
@@ -791,38 +1016,152 @@ func applyTokenUpdate(
 		return
 	}
 
-	token := twitch.NormalizeToken(upd.Token)
-	if token == "" {
+	restart := false
+	tokenReason := false
+	channelReason := false
+	identityReason := false
+
+	if strings.TrimSpace(upd.Token) != "" {
+		token := twitch.NormalizeToken(upd.Token)
+		if token == "" {
+			return
+		}
+		changed := false
+		if state != nil {
+			changed = state.Set(token) || changed
+		}
+		if loader != nil {
+			loader.SetCached(token)
+		}
+		cfg.Token = token
+		if upd.Force || changed {
+			restart = true
+			tokenReason = true
+		}
+	}
+
+	if strings.TrimSpace(upd.Channel) != "" {
+		channel := strings.ToLower(strings.TrimSpace(upd.Channel))
+		if channel != "" && channel != cfg.Channel {
+			cfg.Channel = channel
+			restart = true
+			channelReason = true
+		}
+	}
+	if strings.TrimSpace(upd.Nick) != "" {
+		nick := strings.TrimSpace(upd.Nick)
+		if nick != cfg.Nick {
+			cfg.Nick = nick
+			restart = true
+			identityReason = true
+		}
+	}
+	if upd.UseTLS != nil && cfg.UseTLS != *upd.UseTLS {
+		cfg.UseTLS = *upd.UseTLS
+		restart = true
+		identityReason = true
+	}
+	if upd.DebugDrops != nil {
+		// drop-logging verbosity is bound at IRC connection start; reconnect to apply immediately
+		restart = true
+		identityReason = true
+	}
+
+	if !restart {
 		return
 	}
 
-	changed := false
-	if state != nil {
-		changed = state.Set(token) || changed
-	}
-
-	if loader != nil {
-		loader.SetCached(token)
-	}
-
-	cfg.Token = token
-
-	if !upd.Force && !changed {
-		return
-	}
-
-	switch upd.Reason {
-	case "file":
-		log.Printf("twitch: token reload detected; reconnecting")
-	case "refresh":
-		log.Printf("twitch: refreshed token; reconnecting")
-	case "manual":
-		log.Printf("twitch: manual token reload requested; reconnecting")
-	default:
-		log.Printf("twitch: token update detected; reconnecting")
+	if channelReason {
+		log.Printf("twitch: channel switch applied; reconnecting")
+	} else if identityReason {
+		log.Printf("twitch: runtime settings applied; reconnecting")
+	} else if tokenReason {
+		switch upd.Reason {
+		case "file":
+			log.Printf("twitch: token reload detected; reconnecting")
+		case "refresh":
+			log.Printf("twitch: refreshed token; reconnecting")
+		case "manual":
+			log.Printf("twitch: manual token reload requested; reconnecting")
+		default:
+			log.Printf("twitch: token update detected; reconnecting")
+		}
 	}
 
 	(*cancelCurrent)()
 	<-*doneCurrent
 	*cancelCurrent, *doneCurrent = start(*cfg)
+}
+
+type youtubeSwitcher struct {
+	mu      sync.Mutex
+	current harvester.YouTubeRuntimeSettings
+	applied harvester.YouTubeRuntimeSettings
+	updates chan harvester.YouTubeRuntimeSettings
+}
+
+func newYouTubeSwitcher(initial harvester.YouTubeRuntimeSettings) *youtubeSwitcher {
+	return &youtubeSwitcher{
+		current: initial,
+		applied: initial,
+		updates: make(chan harvester.YouTubeRuntimeSettings, 4),
+	}
+}
+
+func (s *youtubeSwitcher) ApplyRuntime(next harvester.YouTubeRuntimeSettings) (bool, error) {
+	if s == nil {
+		return false, errors.New("youtube switcher unavailable")
+	}
+
+	s.mu.Lock()
+	if s.current == next {
+		s.mu.Unlock()
+		return false, nil
+	}
+	s.current = next
+	s.mu.Unlock()
+
+	sendYouTubeUpdate(s.updates, next)
+	return true, nil
+}
+
+func (s *youtubeSwitcher) Updates() <-chan harvester.YouTubeRuntimeSettings {
+	if s == nil {
+		return nil
+	}
+	return s.updates
+}
+
+func (s *youtubeSwitcher) Apply(next harvester.YouTubeRuntimeSettings) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.applied == next {
+		return false
+	}
+	s.applied = next
+	return true
+}
+
+func sendYouTubeUpdate(ch chan harvester.YouTubeRuntimeSettings, value harvester.YouTubeRuntimeSettings) {
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- value:
+		return
+	default:
+	}
+
+	select {
+	case <-ch:
+	default:
+	}
+
+	select {
+	case ch <- value:
+	default:
+	}
 }

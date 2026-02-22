@@ -63,7 +63,7 @@ func TestReloadTwitchUpdatesRefreshManager(t *testing.T) {
 		TokenFile:    accessPath,
 	}
 
-	har := New(tokens, stub, refreshMgr.SetRefreshToken)
+	har := New(tokens, stub, refreshMgr.SetRefreshToken, RuntimeSettings{})
 
 	if err := os.WriteFile(accessPath, []byte("oauth:new-access\n"), 0o600); err != nil {
 		t.Fatalf("update access file: %v", err)

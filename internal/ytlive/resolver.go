@@ -111,12 +111,26 @@ func (r *Resolver) Resolve(ctx context.Context, raw string) (ResolveResult, erro
 	return ResolveResult{Live: true, WatchURL: watchURL, ChatURL: chatURL}, nil
 }
 
+// NormalizeLiveURL canonicalizes a YouTube input (handle, watch URL, or youtu.be
+// URL) to the URL form consumed by the resolver.
+func NormalizeLiveURL(raw string) (string, error) {
+	normalized, err := normalizeYouTubeURL(raw)
+	if err != nil {
+		return "", err
+	}
+	return normalized.String(), nil
+}
+
 // normalizeYouTubeURL coerces YouTube URLs and handle shorthand into canonical
 // https://www.youtube.com endpoints that can be fetched.
 func normalizeYouTubeURL(raw string) (*url.URL, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return nil, errors.New("ytlive: empty url")
+	}
+
+	if looksLikeHandle(trimmed) {
+		trimmed = "https://www.youtube.com/@" + trimmed
 	}
 
 	if strings.HasPrefix(trimmed, "@") {
@@ -175,6 +189,22 @@ func normalizeYouTubeURL(raw string) (*url.URL, error) {
 	default:
 		return nil, fmt.Errorf("ytlive: unsupported host %q", u.Host)
 	}
+}
+
+func looksLikeHandle(raw string) bool {
+	if raw == "" {
+		return false
+	}
+	if strings.HasPrefix(raw, "@") {
+		return false
+	}
+	if strings.Contains(raw, "/") || strings.Contains(raw, "\\") || strings.Contains(raw, "://") {
+		return false
+	}
+	if strings.Contains(raw, ".") || strings.Contains(raw, "?") || strings.Contains(raw, "&") || strings.Contains(raw, "=") {
+		return false
+	}
+	return true
 }
 
 func isHandlePath(p string) bool {

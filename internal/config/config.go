@@ -27,19 +27,24 @@ type SQLiteConfig struct {
 }
 
 type TwitchConfig struct {
-	Enabled           bool
-	Channels          []string
-	Nick              string
-	Token             string
-	TokenFile         string
-	ClientID          string
-	ClientSecret      string
-	RefreshToken      string
-	RefreshTokenFile  string
-	TLS               bool
-	LegacyChannelEnv  string
-	LegacyTokenEnv    string
-	LegacyClientIDEnv string
+	Enabled             bool
+	Channels            []string
+	Nick                string
+	Token               string
+	TokenFile           string
+	ClientID            string
+	ClientSecret        string
+	RefreshToken        string
+	RefreshTokenFile    string
+	TLS                 bool
+	DebugDrops          bool
+	BackoffMinMS        int
+	BackoffMaxMS        int
+	RefreshBackoffMinMS int
+	RefreshBackoffMaxMS int
+	LegacyChannelEnv    string
+	LegacyTokenEnv      string
+	LegacyClientIDEnv   string
 }
 
 type YouTubeConfig struct {
@@ -59,6 +64,8 @@ const (
 	defaultYouTubeRetrySeconds = 30
 	defaultYouTubePollTimeout  = 15
 	defaultYouTubePollInterval = 10_000
+	defaultTwitchBackoffMinMS  = 1000
+	defaultTwitchBackoffMaxMS  = 60_000
 )
 
 func Load() Config {
@@ -132,6 +139,19 @@ func Load() Config {
 	cfg.Twitch.TLS = readBoolDefaultTrue("GNASTY_TWITCH_TLS", true)
 	if !envExists("GNASTY_TWITCH_TLS") {
 		cfg.Twitch.TLS = readBoolDefaultTrue("TWITCH_TLS", cfg.Twitch.TLS)
+	}
+	cfg.Twitch.DebugDrops = readDebugEnv("GNASTY_TWITCH_DEBUG_DROPS")
+	cfg.Twitch.BackoffMinMS = readIntMin("GNASTY_TWITCH_BACKOFF_MIN_MS", defaultTwitchBackoffMinMS, 1)
+	cfg.Twitch.BackoffMaxMS = readIntMin("GNASTY_TWITCH_BACKOFF_MAX_MS", defaultTwitchBackoffMaxMS, 1)
+	if cfg.Twitch.BackoffMinMS > cfg.Twitch.BackoffMaxMS {
+		cfg.Twitch.BackoffMinMS = defaultTwitchBackoffMinMS
+		cfg.Twitch.BackoffMaxMS = defaultTwitchBackoffMaxMS
+	}
+	cfg.Twitch.RefreshBackoffMinMS = readIntMin("GNASTY_TWITCH_REFRESH_BACKOFF_MIN_MS", defaultTwitchBackoffMinMS, 1)
+	cfg.Twitch.RefreshBackoffMaxMS = readIntMin("GNASTY_TWITCH_REFRESH_BACKOFF_MAX_MS", defaultTwitchBackoffMaxMS, 1)
+	if cfg.Twitch.RefreshBackoffMinMS > cfg.Twitch.RefreshBackoffMaxMS {
+		cfg.Twitch.RefreshBackoffMinMS = defaultTwitchBackoffMinMS
+		cfg.Twitch.RefreshBackoffMaxMS = defaultTwitchBackoffMaxMS
 	}
 
 	ytURL := strings.TrimSpace(os.Getenv("GNASTY_YT_URL"))
@@ -240,6 +260,21 @@ func readInt(name string, def int) int {
 	return n
 }
 
+func readIntMin(name string, def int, min int) int {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return def
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return def
+	}
+	if n < min {
+		return def
+	}
+	return n
+}
+
 func readBool(name string, def bool) bool {
 	raw := strings.TrimSpace(os.Getenv(name))
 	if raw == "" {
@@ -308,16 +343,22 @@ func (c Config) Summary() Summary {
 		BatchSize:  c.Sink.BatchSize,
 		FlushMaxMS: c.Sink.FlushMaxMS,
 		Twitch: TwitchSummary{
-			Enabled:          c.Twitch.Enabled,
-			Channels:         twitchChannels,
-			Nick:             c.Twitch.Nick,
-			Token:            redactString(c.Twitch.Token),
-			TokenFile:        c.Twitch.TokenFile,
-			ClientID:         redactString(c.Twitch.ClientID),
-			ClientSecret:     redactString(c.Twitch.ClientSecret),
-			RefreshToken:     redactString(c.Twitch.RefreshToken),
-			RefreshTokenFile: c.Twitch.RefreshTokenFile,
-			RefreshEnabled:   refreshEnabled,
+			Enabled:             c.Twitch.Enabled,
+			Channels:            twitchChannels,
+			Nick:                c.Twitch.Nick,
+			Token:               redactString(c.Twitch.Token),
+			TokenFile:           c.Twitch.TokenFile,
+			ClientID:            redactString(c.Twitch.ClientID),
+			ClientSecret:        redactString(c.Twitch.ClientSecret),
+			RefreshToken:        redactString(c.Twitch.RefreshToken),
+			RefreshTokenFile:    c.Twitch.RefreshTokenFile,
+			TLS:                 c.Twitch.TLS,
+			DebugDrops:          c.Twitch.DebugDrops,
+			BackoffMinMS:        c.Twitch.BackoffMinMS,
+			BackoffMaxMS:        c.Twitch.BackoffMaxMS,
+			RefreshBackoffMinMS: c.Twitch.RefreshBackoffMinMS,
+			RefreshBackoffMaxMS: c.Twitch.RefreshBackoffMaxMS,
+			RefreshEnabled:      refreshEnabled,
 		},
 		YouTube: YouTubeSummary{
 			Enabled:         c.YouTube.Enabled,
@@ -343,16 +384,22 @@ type Summary struct {
 }
 
 type TwitchSummary struct {
-	Enabled          bool   `json:"enabled"`
-	Channels         int    `json:"channels"`
-	Nick             string `json:"nick,omitempty"`
-	Token            string `json:"token,omitempty"`
-	TokenFile        string `json:"token_file,omitempty"`
-	ClientID         string `json:"client_id,omitempty"`
-	ClientSecret     string `json:"client_secret,omitempty"`
-	RefreshToken     string `json:"refresh_token,omitempty"`
-	RefreshTokenFile string `json:"refresh_token_file,omitempty"`
-	RefreshEnabled   bool   `json:"refresh_enabled"`
+	Enabled             bool   `json:"enabled"`
+	Channels            int    `json:"channels"`
+	Nick                string `json:"nick,omitempty"`
+	Token               string `json:"token,omitempty"`
+	TokenFile           string `json:"token_file,omitempty"`
+	ClientID            string `json:"client_id,omitempty"`
+	ClientSecret        string `json:"client_secret,omitempty"`
+	RefreshToken        string `json:"refresh_token,omitempty"`
+	RefreshTokenFile    string `json:"refresh_token_file,omitempty"`
+	TLS                 bool   `json:"tls"`
+	DebugDrops          bool   `json:"debug_drops"`
+	BackoffMinMS        int    `json:"backoff_min_ms"`
+	BackoffMaxMS        int    `json:"backoff_max_ms"`
+	RefreshBackoffMinMS int    `json:"refresh_backoff_min_ms"`
+	RefreshBackoffMaxMS int    `json:"refresh_backoff_max_ms"`
+	RefreshEnabled      bool   `json:"refresh_enabled"`
 }
 
 type YouTubeSummary struct {
@@ -377,17 +424,22 @@ func (c Config) Redacted() map[string]any {
 			"flush_ms":    c.Sink.FlushMaxMS,
 		},
 		"twitch": map[string]any{
-			"enabled":            c.Twitch.Enabled,
-			"channels":           append([]string(nil), c.Twitch.Channels...),
-			"nick":               c.Twitch.Nick,
-			"token":              redactString(c.Twitch.Token),
-			"token_file":         c.Twitch.TokenFile,
-			"client_id":          redactString(c.Twitch.ClientID),
-			"client_secret":      redactString(c.Twitch.ClientSecret),
-			"refresh_token":      redactString(c.Twitch.RefreshToken),
-			"refresh_token_file": c.Twitch.RefreshTokenFile,
-			"tls":                c.Twitch.TLS,
-			"refresh_enabled":    refreshEnabled,
+			"enabled":                c.Twitch.Enabled,
+			"channels":               append([]string(nil), c.Twitch.Channels...),
+			"nick":                   c.Twitch.Nick,
+			"token":                  redactString(c.Twitch.Token),
+			"token_file":             c.Twitch.TokenFile,
+			"client_id":              redactString(c.Twitch.ClientID),
+			"client_secret":          redactString(c.Twitch.ClientSecret),
+			"refresh_token":          redactString(c.Twitch.RefreshToken),
+			"refresh_token_file":     c.Twitch.RefreshTokenFile,
+			"tls":                    c.Twitch.TLS,
+			"debug_drops":            c.Twitch.DebugDrops,
+			"backoff_min_ms":         c.Twitch.BackoffMinMS,
+			"backoff_max_ms":         c.Twitch.BackoffMaxMS,
+			"refresh_backoff_min_ms": c.Twitch.RefreshBackoffMinMS,
+			"refresh_backoff_max_ms": c.Twitch.RefreshBackoffMaxMS,
+			"refresh_enabled":        refreshEnabled,
 		},
 		"youtube": map[string]any{
 			"enabled": c.YouTube.Enabled,

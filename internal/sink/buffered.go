@@ -25,6 +25,11 @@ type BufferedWriter struct {
 	lastErr error
 }
 
+type BufferedSnapshot struct {
+	BatchSize     int
+	FlushInterval time.Duration
+}
+
 type tracedMessage struct {
 	msg   core.ChatMessage
 	trace *ingesttrace.MessageTrace
@@ -98,6 +103,44 @@ func (b *BufferedWriter) Close() error {
 		}
 	}
 	return pendingErr
+}
+
+func (b *BufferedWriter) UpdateOptions(opts BufferedOptions) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return false
+	}
+
+	batch := opts.BatchSize
+	if batch <= 0 {
+		batch = 1
+	}
+	interval := opts.FlushInterval
+	changed := b.batchSize != batch || b.flushInterval != interval
+	if !changed {
+		return false
+	}
+
+	b.batchSize = batch
+	b.flushInterval = interval
+	if len(b.buffer) > 0 {
+		if b.flushInterval > 0 {
+			b.startTimerLocked()
+		} else {
+			b.stopTimerLocked()
+		}
+	}
+	return true
+}
+
+func (b *BufferedWriter) Snapshot() BufferedSnapshot {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return BufferedSnapshot{
+		BatchSize:     b.batchSize,
+		FlushInterval: b.flushInterval,
+	}
 }
 
 func (b *BufferedWriter) onTimer() {

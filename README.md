@@ -151,6 +151,8 @@ legacy direct watch link (`https://www.youtube.com/watch?v=...`) and the modern
 channel handle form (`https://youtube.com/@creator/live`). Handles are
 automatically normalized to their live endpoint before the resolver polls the
 page, which keeps links short and resilient to vanity domain changes.
+These startup values are bootstrap defaults. Runtime authority for all non-secret
+settings is the admin API (`POST /admin/config`) until the process restarts.
 
 The YouTube poller continuously re-resolves the configured URL every
 `GNASTY_YT_RETRY_SECS` (default 30 seconds). When the channel is offline gnasty
@@ -242,7 +244,10 @@ fallback images.
 | `GET /metrics` | Prometheus metrics (if enabled). |
 | `GET /healthz` | JSON liveness probe with sink reachability. |
 | `GET /configz` | Effective configuration snapshot (secrets redacted). |
+| `POST /admin/config` | Bulk runtime config update for non-secret settings (sinks, twitch runtime knobs, youtube runtime knobs). |
 | `POST /admin/twitch/reload` | Forces the Twitch IRC client to reload the token file (if present) and reconnect immediately. |
+| `POST /admin/twitch/channel` | Switches Twitch ingest to a new channel login at runtime. |
+| `POST /admin/youtube/url` | Switches YouTube ingest to a new live/watch URL at runtime. |
 
 Responses from `/messages` and `/count` are gzip-compressed when the client sends
 `Accept-Encoding: gzip`.
@@ -261,6 +266,57 @@ Responses from `/messages` and `/count` are gzip-compressed when the client send
 
 When the harvester runs with `-twitch-token-file`, it already watches the file for changes and reconnects automatically. `POST
 /admin/twitch/reload` lets you force the reload path immediately instead of waiting for the next poll.
+
+#### `POST /admin/twitch/channel`
+
+- **Method:** `POST`
+- **Input:** query `?channel=<login-or-url>` or JSON body `{"channel":"<login-or-url>"}`
+- **Accepted values:** `login`, `@login`, `twitch.tv/login`, `https://twitch.tv/login`, `https://www.twitch.tv/login`
+- **Response:**
+
+  ```json
+  { "status": "ok", "changed": true, "channel": "rocketleague" }
+  ```
+
+#### `POST /admin/youtube/url`
+
+- **Method:** `POST`
+- **Input:** query `?url=<handle-or-url>` or JSON body `{"url":"<handle-or-url>"}`
+- **Accepted values:** `@handle`, `handle`, `youtube.com/@handle/live`, watch URLs, and `youtu.be/...`
+- **Response:**
+
+  ```json
+  { "status": "ok", "changed": true, "url": "https://www.youtube.com/@jynxzi/live" }
+  ```
+
+#### `POST /admin/config`
+
+- **Method:** `POST`
+- **Usage:** Apply multiple non-secret runtime fields in one request. Env values remain startup defaults only.
+- **Response:** includes per-section change flags and the effective runtime config.
+
+Example:
+
+```json
+{
+  "sinks": { "batch_size": 50, "flush_max_ms": 250 },
+  "twitch": {
+    "channel": "rocketleague",
+    "nick": "elora_bot",
+    "tls": true,
+    "debug_drops": false,
+    "backoff_min_ms": 1000,
+    "backoff_max_ms": 60000
+  },
+  "youtube": {
+    "url": "https://www.youtube.com/@jynxzi/live",
+    "retry_seconds": 30,
+    "poll_timeout_secs": 15,
+    "poll_interval_ms": 10000,
+    "debug": false
+  }
+}
+```
 
 Example queries:
 

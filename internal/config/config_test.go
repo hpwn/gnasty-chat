@@ -16,6 +16,11 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("GNASTY_YT_POLL_TIMEOUT_SECS", "")
 	t.Setenv("GNASTY_YT_POLL_INTERVAL_MS", "")
 	t.Setenv("GNASTY_YT_DEBUG", "")
+	t.Setenv("GNASTY_TWITCH_DEBUG_DROPS", "")
+	t.Setenv("GNASTY_TWITCH_BACKOFF_MIN_MS", "")
+	t.Setenv("GNASTY_TWITCH_BACKOFF_MAX_MS", "")
+	t.Setenv("GNASTY_TWITCH_REFRESH_BACKOFF_MIN_MS", "")
+	t.Setenv("GNASTY_TWITCH_REFRESH_BACKOFF_MAX_MS", "")
 
 	cfg := Load()
 	if !cfg.HasSink("sqlite") {
@@ -45,6 +50,12 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.YouTube.Debug {
 		t.Fatalf("expected youtube debug default false")
 	}
+	if cfg.Twitch.DebugDrops {
+		t.Fatalf("expected twitch debug drops default false")
+	}
+	if cfg.Twitch.BackoffMinMS != 1000 || cfg.Twitch.BackoffMaxMS != 60000 {
+		t.Fatalf("unexpected twitch backoff defaults: min=%d max=%d", cfg.Twitch.BackoffMinMS, cfg.Twitch.BackoffMaxMS)
+	}
 }
 
 func TestLoadEnvOverrides(t *testing.T) {
@@ -57,6 +68,11 @@ func TestLoadEnvOverrides(t *testing.T) {
 	t.Setenv("GNASTY_TWITCH_TOKEN", "oauth:abc")
 	t.Setenv("GNASTY_TWITCH_CLIENT_SECRET", "secret")
 	t.Setenv("GNASTY_TWITCH_TLS", "false")
+	t.Setenv("GNASTY_TWITCH_DEBUG_DROPS", "1")
+	t.Setenv("GNASTY_TWITCH_BACKOFF_MIN_MS", "1500")
+	t.Setenv("GNASTY_TWITCH_BACKOFF_MAX_MS", "45000")
+	t.Setenv("GNASTY_TWITCH_REFRESH_BACKOFF_MIN_MS", "2000")
+	t.Setenv("GNASTY_TWITCH_REFRESH_BACKOFF_MAX_MS", "30000")
 	t.Setenv("GNASTY_YT_URL", "https://example.test/watch")
 	t.Setenv("GNASTY_YT_RETRY_SECS", "45")
 	t.Setenv("GNASTY_YT_DUMP_UNHANDLED", "true")
@@ -91,6 +107,15 @@ func TestLoadEnvOverrides(t *testing.T) {
 	}
 	if cfg.Twitch.TLS {
 		t.Fatalf("expected TLS disabled from env override")
+	}
+	if !cfg.Twitch.DebugDrops {
+		t.Fatalf("expected twitch debug drops override")
+	}
+	if cfg.Twitch.BackoffMinMS != 1500 || cfg.Twitch.BackoffMaxMS != 45000 {
+		t.Fatalf("unexpected twitch backoff override: min=%d max=%d", cfg.Twitch.BackoffMinMS, cfg.Twitch.BackoffMaxMS)
+	}
+	if cfg.Twitch.RefreshBackoffMinMS != 2000 || cfg.Twitch.RefreshBackoffMaxMS != 30000 {
+		t.Fatalf("unexpected twitch refresh backoff override: min=%d max=%d", cfg.Twitch.RefreshBackoffMinMS, cfg.Twitch.RefreshBackoffMaxMS)
 	}
 	if !cfg.YouTube.Enabled || cfg.YouTube.LiveURL == "" {
 		t.Fatalf("expected youtube enabled with URL")

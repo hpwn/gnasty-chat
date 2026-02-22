@@ -86,3 +86,42 @@ func TestBufferedWriterErrorPropagation(t *testing.T) {
 		t.Fatalf("expected error from underlying writer")
 	}
 }
+
+func TestBufferedWriterUpdateOptionsNoop(t *testing.T) {
+	base := &recordingWriter{}
+	bw := NewBufferedWriter(base, BufferedOptions{BatchSize: 3, FlushInterval: 25 * time.Millisecond})
+	defer func() { _ = bw.Close() }()
+
+	if changed := bw.UpdateOptions(BufferedOptions{BatchSize: 3, FlushInterval: 25 * time.Millisecond}); changed {
+		t.Fatalf("expected changed=false")
+	}
+	snap := bw.Snapshot()
+	if snap.BatchSize != 3 || snap.FlushInterval != 25*time.Millisecond {
+		t.Fatalf("unexpected snapshot: %+v", snap)
+	}
+}
+
+func TestBufferedWriterUpdateOptionsAppliesAtRuntime(t *testing.T) {
+	base := &recordingWriter{}
+	bw := NewBufferedWriter(base, BufferedOptions{BatchSize: 4, FlushInterval: time.Hour})
+	defer func() { _ = bw.Close() }()
+
+	for i := 0; i < 2; i++ {
+		if err := bw.Write(core.ChatMessage{ID: fmt.Sprintf("before-%d", i)}, nil); err != nil {
+			t.Fatalf("write before update: %v", err)
+		}
+	}
+	if base.Count() != 0 {
+		t.Fatalf("expected no flush before update")
+	}
+
+	if changed := bw.UpdateOptions(BufferedOptions{BatchSize: 2, FlushInterval: time.Hour}); !changed {
+		t.Fatalf("expected changed=true")
+	}
+	if err := bw.Write(core.ChatMessage{ID: "after-update"}, nil); err != nil {
+		t.Fatalf("write after update: %v", err)
+	}
+	if base.Count() != 3 {
+		t.Fatalf("expected buffered messages flushed after runtime update write, got %d", base.Count())
+	}
+}

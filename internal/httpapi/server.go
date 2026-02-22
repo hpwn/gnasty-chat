@@ -22,15 +22,16 @@ type Store interface {
 }
 
 type Options struct {
-	Addr            string
-	CORSOrigins     []string
-	RateLimitRPS    int
-	RateLimitBurst  int
-	EnableMetrics   bool
-	EnableAccessLog bool
-	EnablePprof     bool
-	Build           BuildInfo
-	ConfigSnapshot  map[string]any
+	Addr               string
+	CORSOrigins        []string
+	RateLimitRPS       int
+	RateLimitBurst     int
+	EnableMetrics      bool
+	EnableAccessLog    bool
+	EnablePprof        bool
+	Build              BuildInfo
+	ConfigSnapshot     map[string]any
+	ConfigSnapshotFunc func() map[string]any
 }
 
 type streamClient struct {
@@ -205,7 +206,11 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleConfigz(w http.ResponseWriter, _ *http.Request) {
-	payload := map[string]any{"config": s.opts.ConfigSnapshot}
+	snapshot := s.opts.ConfigSnapshot
+	if s.opts.ConfigSnapshotFunc != nil {
+		snapshot = s.opts.ConfigSnapshotFunc()
+	}
+	payload := map[string]any{"config": snapshot}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(payload)

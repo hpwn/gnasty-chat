@@ -5,6 +5,9 @@ This service reads configuration from environment variables during startup and l
 via `GET /configz`. Secrets such as tokens and client secrets are never logged or returned in
 plain text; instead they are replaced with `***REDACTED*** (len=N)` to show the size of the value.
 
+Runtime authority for non-secret values is the admin API (`POST /admin/config` from elora-chat).
+Environment values are bootstrap defaults only and are used again only after restart.
+
 ## Environment variables
 
 | Name | Type | Default | Example | Redaction |
@@ -25,6 +28,10 @@ plain text; instead they are replaced with `***REDACTED*** (len=N)` to show the 
 | `GNASTY_TWITCH_REFRESH_TOKEN_FILE` | filesystem path | _(empty)_ | `/secrets/twitch_refresh` | Logged verbatim |
 | `GNASTY_TWITCH_TLS` | boolean | `true` | `false` | Logged verbatim |
 | `GNASTY_TWITCH_DEBUG_DROPS` | boolean-ish (`1/true/yes`) | `false` | `1` | Logged verbatim |
+| `GNASTY_TWITCH_BACKOFF_MIN_MS` | integer milliseconds (>0) | `1000` | `1500` | Logged verbatim |
+| `GNASTY_TWITCH_BACKOFF_MAX_MS` | integer milliseconds (>0) | `60000` | `45000` | Logged verbatim |
+| `GNASTY_TWITCH_REFRESH_BACKOFF_MIN_MS` | integer milliseconds (>0) | `1000` | `2000` | Logged verbatim |
+| `GNASTY_TWITCH_REFRESH_BACKOFF_MAX_MS` | integer milliseconds (>0) | `60000` | `30000` | Logged verbatim |
 | `TWITCH_CHANNEL` | string | _(empty)_ | `elora` | Logged verbatim |
 | `TWITCH_NICK` | string | _(empty)_ | `elora_bot` | Logged verbatim |
 | `TWITCH_TOKEN` | string | _(empty)_ | `oauth:xxxx` | Redacted |
@@ -40,6 +47,10 @@ plain text; instead they are replaced with `***REDACTED*** (len=N)` to show the 
 
 Values listed as "Redacted" are replaced with `***REDACTED*** (len=N)` in logs and the `/configz`
 endpoint. All other values are emitted verbatim.
+
+`GNASTY_TWITCH_CHANNELS`/`TWITCH_CHANNEL`, `GNASTY_YT_URL`/`YOUTUBE_URL`, sink buffering values,
+and non-secret Twitch/YouTube polling/backoff/logging settings are bootstrap defaults read at
+startup. After startup, `POST /admin/config` is the active source of truth until restart.
 
 `GNASTY_TWITCH_DEBUG_DROPS` enables per-drop Twitch IRC diagnostics at debug level. When disabled,
 the harvester emits only rate-limited drop summaries (grouped by drop reason and IRC command) to

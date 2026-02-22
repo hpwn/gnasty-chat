@@ -17,8 +17,11 @@ func TestNormalizeYouTubeURL_HandleVariants(t *testing.T) {
 		want string
 	}{
 		{"bare handle", "@creator", "https://www.youtube.com/@creator/live"},
+		{"bare handle without at", "creator", "https://www.youtube.com/@creator/live"},
 		{"short host", "youtube.com/@creator/live", "https://www.youtube.com/@creator/live"},
 		{"www host", "https://www.youtube.com/@creator", "https://www.youtube.com/@creator/live"},
+		{"watch url", "https://www.youtube.com/watch?v=abc123&list=foo", "https://www.youtube.com/watch?v=abc123"},
+		{"youtu be", "https://youtu.be/abc123", "https://www.youtube.com/watch?v=abc123"},
 	}
 
 	for _, tc := range tests {
@@ -31,6 +34,12 @@ func TestNormalizeYouTubeURL_HandleVariants(t *testing.T) {
 				t.Fatalf("normalizeYouTubeURL() = %q, want %q", got.String(), tc.want)
 			}
 		})
+	}
+}
+
+func TestNormalizeLiveURL_Empty(t *testing.T) {
+	if _, err := NormalizeLiveURL("  "); err == nil {
+		t.Fatalf("NormalizeLiveURL expected error for empty input")
 	}
 }
 
