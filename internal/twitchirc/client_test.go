@@ -318,3 +318,56 @@ func TestParsePrivmsgBadgeEnrichmentTimeout(t *testing.T) {
 		t.Fatalf("expected badge resolver context to include a deadline")
 	}
 }
+
+func TestParseAlertBits(t *testing.T) {
+	line := "@bits=250;display-name=Cheerer;id=tw-1;tmi-sent-ts=1700000000000 :user!user@user.tmi.twitch.tv PRIVMSG #chan :great stream"
+	alert, ok := parseAlert(line, "chan")
+	if !ok {
+		t.Fatalf("expected bits alert")
+	}
+	if alert.Type != "twitch.bits" {
+		t.Fatalf("unexpected type %q", alert.Type)
+	}
+	if alert.Amount != 250 {
+		t.Fatalf("expected bits amount 250, got %v", alert.Amount)
+	}
+	if alert.Username != "Cheerer" {
+		t.Fatalf("unexpected username %q", alert.Username)
+	}
+}
+
+func TestParseAlertUserNoticeMapping(t *testing.T) {
+	tests := []struct {
+		line      string
+		wantType  string
+		wantCount int
+	}{
+		{
+			line:     "@msg-id=sub;display-name=Subber;id=sub-1;tmi-sent-ts=1700000000000 :tmi.twitch.tv USERNOTICE #chan :hello",
+			wantType: "twitch.subs",
+		},
+		{
+			line:      "@msg-id=submysterygift;msg-param-mass-gift-count=5;display-name=Gifter;id=gift-1;tmi-sent-ts=1700000000000 :tmi.twitch.tv USERNOTICE #chan :gifted",
+			wantType:  "twitch.gifted_subs",
+			wantCount: 5,
+		},
+		{
+			line:      "@msg-id=raid;msg-param-viewerCount=42;display-name=Raider;id=raid-1;tmi-sent-ts=1700000000000 :tmi.twitch.tv USERNOTICE #chan :raid incoming",
+			wantType:  "twitch.raids",
+			wantCount: 42,
+		},
+	}
+
+	for _, tt := range tests {
+		alert, ok := parseAlert(tt.line, "chan")
+		if !ok {
+			t.Fatalf("expected alert for line %q", tt.line)
+		}
+		if alert.Type != tt.wantType {
+			t.Fatalf("type mismatch: want %q got %q", tt.wantType, alert.Type)
+		}
+		if tt.wantCount > 0 && alert.Count != tt.wantCount {
+			t.Fatalf("count mismatch: want %d got %d", tt.wantCount, alert.Count)
+		}
+	}
+}

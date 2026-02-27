@@ -234,6 +234,7 @@ func main() {
 		sinkDB   *sink.SQLiteSink
 		api      *httpapi.Server
 		writer   sink.Writer = noopWriter{}
+		alerts   sink.AlertWriter
 		buffered *sink.BufferedWriter
 	)
 
@@ -250,6 +251,7 @@ func main() {
 			log.Fatalf("harvester: sqlite migrate: %v", err)
 		}
 		writer = sinkDB
+		alerts = sinkDB
 	} else {
 		log.Printf("harvester: sqlite sink disabled (configured sinks=%v)", cfg.Sinks)
 	}
@@ -337,6 +339,9 @@ func main() {
 				}
 			}()
 			writer = sink.WithAPI(sinkDB, api)
+			if aw, ok := writer.(sink.AlertWriter); ok {
+				alerts = aw
+			}
 			log.Printf("harvester: http api ready on %s", httpAddr)
 		}
 	}
@@ -347,6 +352,7 @@ func main() {
 			FlushInterval: time.Duration(runtimeSettings.Sinks.FlushMaxMS) * time.Millisecond,
 		})
 		writer = buffered
+		alerts = buffered
 		har.SetSinkRuntimeApplier(func(settings harvester.SinkRuntimeSettings) (bool, error) {
 			changed := buffered.UpdateOptions(sink.BufferedOptions{
 				BatchSize:     settings.BatchSize,
@@ -381,6 +387,17 @@ func main() {
 
 			if err := writer.Write(msg, trace); err != nil {
 				log.Printf("harvester: write twitch message: %v", err)
+				if api != nil {
+					api.ReportDBWriteError()
+				}
+			}
+		}
+		alertHandler := func(alert core.AlertEvent) {
+			if alerts == nil {
+				return
+			}
+			if err := alerts.WriteAlert(alert); err != nil {
+				log.Printf("harvester: write twitch alert: %v", err)
 				if api != nil {
 					api.ReportDBWriteError()
 				}
@@ -542,7 +559,7 @@ func main() {
 			}
 
 			started++
-			go runTwitchWithReload(ctx, cancel, cfg, handler, loader, state, twitchUpdates)
+			go runTwitchWithReload(ctx, cancel, cfg, handler, alertHandler, loader, state, twitchUpdates)
 			log.Printf("harvester: twitch receiver started for #%s", channel)
 		}
 	}
@@ -551,6 +568,17 @@ func main() {
 		handler := func(msg core.ChatMessage) {
 			if err := writer.Write(msg, nil); err != nil {
 				log.Printf("harvester: write youtube message: %v", err)
+				if api != nil {
+					api.ReportDBWriteError()
+				}
+			}
+		}
+		alertHandler := func(alert core.AlertEvent) {
+			if alerts == nil {
+				return
+			}
+			if err := alerts.WriteAlert(alert); err != nil {
+				log.Printf("harvester: write youtube alert: %v", err)
 				if api != nil {
 					api.ReportDBWriteError()
 				}
@@ -600,7 +628,7 @@ func main() {
 					PollTimeoutSecs: target.PollTimeoutSecs,
 					PollIntervalMS:  target.PollIntervalMS,
 					Debug:           target.Debug,
-				}, handler)
+				}, handler, alertHandler)
 				go func() {
 					defer close(done)
 					if err := client.Run(pollCtx); err != nil && !errors.Is(err, context.Canceled) {
@@ -762,6 +790,7 @@ func runTwitchWithReload(
 	cancel context.CancelFunc,
 	baseCfg twitchirc.Config,
 	handler twitchirc.Handler,
+	alertHandler twitchirc.AlertHandler,
 	loader *twitch.FileTokenLoader,
 	state *tokenState,
 	updates <-chan twitchUpdate,
@@ -769,7 +798,7 @@ func runTwitchWithReload(
 	startClient := func(cfg twitchirc.Config) (context.CancelFunc, <-chan struct{}) {
 		runCtx, runCancel := context.WithCancel(ctx)
 		done := make(chan struct{})
-		client := twitchirc.New(cfg, handler)
+		client := twitchirc.New(cfg, handler, alertHandler)
 		go func() {
 			defer close(done)
 			if err := client.Run(runCtx); err != nil && !errors.Is(err, context.Canceled) {

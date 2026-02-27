@@ -29,10 +29,12 @@ type Config struct {
 }
 
 type Handler func(core.ChatMessage)
+type AlertHandler func(core.AlertEvent)
 
 type Client struct {
 	cfg         Config
 	handler     Handler
+	alerts      AlertHandler
 	http        *http.Client
 	pollDelay   time.Duration
 	pollTimeout time.Duration
@@ -61,8 +63,12 @@ type ytEmote struct {
 	Images    []ytEmoteImage    `json:"images,omitempty"`
 }
 
-func New(cfg Config, handler Handler) *Client {
+func New(cfg Config, handler Handler, alertHandlers ...AlertHandler) *Client {
 	httpClient := &http.Client{}
+	var alertHandler AlertHandler
+	if len(alertHandlers) > 0 {
+		alertHandler = alertHandlers[0]
+	}
 
 	timeout := defaultPollTimeout
 	switch {
@@ -83,6 +89,7 @@ func New(cfg Config, handler Handler) *Client {
 	return &Client{
 		cfg:         cfg,
 		handler:     handler,
+		alerts:      alertHandler,
 		http:        httpClient,
 		pollDelay:   pollDelay,
 		pollTimeout: timeout,
@@ -155,7 +162,7 @@ func (c *Client) Run(ctx context.Context) error {
 			)
 		}
 
-		messages, nextContinuation, timeoutMs, hasTimeout, err := c.poll(pollCtx, apiKey, clientVersion, continuation)
+		messages, alerts, nextContinuation, timeoutMs, hasTimeout, err := c.poll(pollCtx, apiKey, clientVersion, continuation)
 		if cancel != nil {
 			cancel()
 		}
@@ -177,6 +184,11 @@ func (c *Client) Run(ctx context.Context) error {
 		if len(messages) > 0 && c.handler != nil {
 			for _, msg := range messages {
 				c.handler(msg)
+			}
+		}
+		if len(alerts) > 0 && c.alerts != nil {
+			for _, alert := range alerts {
+				c.alerts(alert)
 			}
 		}
 
@@ -285,7 +297,7 @@ func (c *Client) bootstrap(ctx context.Context, liveURL string) (apiKey, clientV
 	return apiKey, clientVersion, continuation, nil
 }
 
-func (c *Client) poll(ctx context.Context, apiKey, clientVersion, continuation string) ([]core.ChatMessage, string, int, bool, error) {
+func (c *Client) poll(ctx context.Context, apiKey, clientVersion, continuation string) ([]core.ChatMessage, []core.AlertEvent, string, int, bool, error) {
 	endpoint := fmt.Sprintf("https://www.youtube.com/youtubei/v1/live_chat/get_live_chat?key=%s", url.QueryEscape(apiKey))
 
 	payload := map[string]any{
@@ -301,7 +313,7 @@ func (c *Client) poll(ctx context.Context, apiKey, clientVersion, continuation s
 
 	buf, err := json.Marshal(payload)
 	if err != nil {
-		return nil, continuation, 0, false, err
+		return nil, nil, continuation, 0, false, err
 	}
 
 	if c.cfg.Debug {
@@ -310,25 +322,25 @@ func (c *Client) poll(ctx context.Context, apiKey, clientVersion, continuation s
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(buf))
 	if err != nil {
-		return nil, continuation, 0, false, err
+		return nil, nil, continuation, 0, false, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; ytlive-harvester/1.0)")
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, continuation, 0, false, err
+		return nil, nil, continuation, 0, false, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
-		return nil, continuation, 0, false, fmt.Errorf("ytlive: poll status %s: %s", resp.Status, strings.TrimSpace(string(body)))
+		return nil, nil, continuation, 0, false, fmt.Errorf("ytlive: poll status %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		return nil, continuation, 0, false, err
+		return nil, nil, continuation, 0, false, err
 	}
 
 	if c.cfg.Debug {
@@ -342,11 +354,12 @@ func (c *Client) poll(ctx context.Context, apiKey, clientVersion, continuation s
 
 	var payloadResp map[string]any
 	if err := json.Unmarshal(body, &payloadResp); err != nil {
-		return nil, continuation, 0, false, fmt.Errorf("ytlive: decode poll response: %w", err)
+		return nil, nil, continuation, 0, false, fmt.Errorf("ytlive: decode poll response: %w", err)
 	}
 
 	continuation, timeout, hasTimeout := extractContinuation(payloadResp)
 	messages, summary, failures, nonChats := extractMessages(payloadResp)
+	alerts := extractAlerts(payloadResp)
 
 	if c.cfg.Debug {
 		log.Printf(
@@ -361,7 +374,7 @@ func (c *Client) poll(ctx context.Context, apiKey, clientVersion, continuation s
 
 	logPollResults(summary, failures, nonChats, c.cfg.DumpUnhandled)
 
-	return messages, continuation, timeout, hasTimeout, nil
+	return messages, alerts, continuation, timeout, hasTimeout, nil
 }
 
 func extractContinuation(payload map[string]any) (string, int, bool) {
@@ -483,6 +496,144 @@ func extractMessages(payload map[string]any) ([]core.ChatMessage, pollSummary, [
 	}
 
 	return messages, summary, failures, nonChats
+}
+
+func extractAlerts(payload map[string]any) []core.AlertEvent {
+	actions := gatherActions(payload)
+	out := make([]core.AlertEvent, 0)
+	for _, action := range actions {
+		renderers := collectAlertRenderers(action)
+		for _, ar := range renderers {
+			alert, ok := buildAlert(ar.kind, ar.renderer)
+			if !ok {
+				continue
+			}
+			out = append(out, alert)
+		}
+	}
+	return out
+}
+
+type alertRenderer struct {
+	kind     string
+	renderer map[string]any
+}
+
+func collectAlertRenderers(action map[string]any) []alertRenderer {
+	out := make([]alertRenderer, 0)
+	keys := []string{
+		"liveChatPaidMessageRenderer",
+		"liveChatPaidStickerRenderer",
+		"liveChatMembershipItemRenderer",
+		"liveChatSponsorshipsGiftPurchaseAnnouncementRenderer",
+		"liveChatSponsorshipsGiftRedemptionAnnouncementRenderer",
+	}
+	var walk func(any)
+	walk = func(v any) {
+		switch val := v.(type) {
+		case map[string]any:
+			for _, key := range keys {
+				if renderer, ok := val[key].(map[string]any); ok {
+					out = append(out, alertRenderer{kind: key, renderer: renderer})
+				}
+			}
+			for _, child := range val {
+				walk(child)
+			}
+		case []any:
+			for _, child := range val {
+				walk(child)
+			}
+		}
+	}
+	walk(action)
+	return out
+}
+
+func buildAlert(kind string, renderer map[string]any) (core.AlertEvent, bool) {
+	if renderer == nil {
+		return core.AlertEvent{}, false
+	}
+	var alertType string
+	switch kind {
+	case "liveChatPaidMessageRenderer", "liveChatPaidStickerRenderer":
+		alertType = "youtube.super_chats"
+	case "liveChatMembershipItemRenderer":
+		alertType = "youtube.members"
+	case "liveChatSponsorshipsGiftPurchaseAnnouncementRenderer", "liveChatSponsorshipsGiftRedemptionAnnouncementRenderer":
+		alertType = "youtube.gifted_members"
+	default:
+		return core.AlertEvent{}, false
+	}
+
+	id := stringField(renderer, "id")
+	ts := timestampField(renderer, "timestampUsec")
+	if ts.IsZero() {
+		ts = time.Now().UTC()
+	}
+	username := textField(renderer, "authorName")
+	text := textField(renderer, "message")
+	if text == "" {
+		text = textField(renderer, "headerSubtext")
+	}
+	amountText := textField(renderer, "purchaseAmountText")
+	if text == "" {
+		text = amountText
+	}
+	amount, currency := parseAmountCurrency(amountText)
+	count := intField(renderer, "amount")
+	if count <= 0 {
+		count = intField(renderer, "giftMembershipsCount")
+	}
+	if count <= 0 && alertType == "youtube.gifted_members" {
+		count = 1
+	}
+
+	alert := core.AlertEvent{
+		ID:              id,
+		PlatformEventID: id,
+		Platform:        "YouTube",
+		Type:            alertType,
+		Ts:              ts,
+		TimestampMS:     ts.UnixMilli(),
+		Username:        username,
+		Text:            text,
+		Amount:          amount,
+		Currency:        currency,
+		Count:           count,
+	}
+	if alert.ID == "" {
+		alert.ID = fmt.Sprintf("yt-alert-%d", ts.UnixNano())
+	}
+
+	meta := map[string]any{
+		"renderer_type": kind,
+		"renderer":      renderer,
+	}
+	if data, err := json.Marshal(meta); err == nil {
+		alert.RawJSON = string(data)
+	}
+	return alert, true
+}
+
+func parseAmountCurrency(raw string) (float64, string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, ""
+	}
+	// Handles examples like "$5.00", "€2.99", "JPY 500", "CA$10.00".
+	re := regexp.MustCompile(`^\s*([^\d\s.,-]+|[A-Za-z]{3})?\s*([0-9][0-9,]*(?:\.[0-9]+)?)`)
+	m := re.FindStringSubmatch(raw)
+	if len(m) < 3 {
+		return 0, ""
+	}
+	currency := strings.TrimSpace(m[1])
+	numeric := strings.ReplaceAll(strings.TrimSpace(m[2]), ",", "")
+	value, err := strconv.ParseFloat(numeric, 64)
+	if err != nil {
+		return 0, ""
+	}
+	return value, currency
 }
 
 func gatherActions(payload map[string]any) []map[string]any {

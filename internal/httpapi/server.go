@@ -19,6 +19,8 @@ import (
 type Store interface {
 	CountMessages(ctx context.Context, filters Filters) (int64, error)
 	ListMessages(ctx context.Context, filters Filters) ([]core.ChatMessage, error)
+	CountAlerts(ctx context.Context, filters AlertFilters) (int64, error)
+	ListAlerts(ctx context.Context, filters AlertFilters) ([]core.AlertEvent, error)
 }
 
 type Options struct {
@@ -40,6 +42,12 @@ type streamClient struct {
 	transport string
 }
 
+type alertStreamClient struct {
+	ch        chan core.AlertEvent
+	filters   AlertFilters
+	transport string
+}
+
 type Server struct {
 	httpServer *http.Server
 	store      Store
@@ -47,9 +55,10 @@ type Server struct {
 
 	mux *http.ServeMux
 
-	mu      sync.Mutex
-	clients map[*streamClient]struct{}
-	closed  bool
+	mu           sync.Mutex
+	clients      map[*streamClient]struct{}
+	alertClients map[*alertStreamClient]struct{}
+	closed       bool
 
 	rateLimiter *ipRateLimiter
 	cors        *corsPolicy
@@ -58,11 +67,12 @@ type Server struct {
 
 func New(store Store, opts Options) *Server {
 	srv := &Server{
-		store:       store,
-		opts:        opts,
-		clients:     make(map[*streamClient]struct{}),
-		rateLimiter: newIPRateLimiter(opts.RateLimitRPS, opts.RateLimitBurst),
-		cors:        newCORSPolicy(opts.CORSOrigins),
+		store:        store,
+		opts:         opts,
+		clients:      make(map[*streamClient]struct{}),
+		alertClients: make(map[*alertStreamClient]struct{}),
+		rateLimiter:  newIPRateLimiter(opts.RateLimitRPS, opts.RateLimitBurst),
+		cors:         newCORSPolicy(opts.CORSOrigins),
 	}
 	if opts.EnableMetrics {
 		srv.metrics = newMetrics()
@@ -90,6 +100,10 @@ func (s *Server) registerRoutes() {
 	s.mux.Handle("/messages", s.wrap("messages", s.handleMessages, handlerOptions{gzip: true}))
 	s.mux.Handle("/stream", s.wrap("stream", s.handleStream, handlerOptions{}))
 	s.mux.Handle("/ws", s.wrap("ws", s.handleWS, handlerOptions{}))
+	s.mux.Handle("/alerts/count", s.wrap("alerts_count", s.handleAlertsCount, handlerOptions{gzip: true}))
+	s.mux.Handle("/alerts", s.wrap("alerts", s.handleAlerts, handlerOptions{gzip: true}))
+	s.mux.Handle("/alerts/stream", s.wrap("alerts_stream", s.handleAlertStream, handlerOptions{}))
+	s.mux.Handle("/alerts/ws", s.wrap("alerts_ws", s.handleAlertWS, handlerOptions{}))
 	s.mux.Handle("/info", s.wrap("info", s.handleInfo, handlerOptions{}))
 	if s.metrics != nil {
 		s.mux.Handle("/metrics", s.wrap("metrics", s.handleMetrics, handlerOptions{}))
@@ -249,6 +263,36 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(rows)
 }
 
+func (s *Server) handleAlertsCount(w http.ResponseWriter, r *http.Request) {
+	filters, err := AlertFiltersFromRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	count, err := s.store.CountAlerts(r.Context(), filters)
+	if err != nil {
+		http.Error(w, "count error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(map[string]any{"count": count})
+}
+
+func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
+	filters, err := AlertFiltersFromRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	rows, err := s.store.ListAlerts(r.Context(), filters)
+	if err != nil {
+		http.Error(w, "list error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(rows)
+}
+
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -402,6 +446,133 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handleAlertStream(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	filters, err := AlertFiltersFromRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	filters = filters.CloneForStream()
+
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	if r.Method == http.MethodHead {
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "stream unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	client := &alertStreamClient{
+		ch:        make(chan core.AlertEvent, 256),
+		filters:   filters,
+		transport: "sse",
+	}
+	if !s.addAlertClient(client) {
+		http.Error(w, "server shutting down", http.StatusServiceUnavailable)
+		return
+	}
+	defer s.removeAlertClient(client)
+
+	fmt.Fprintf(w, ":ok\n\n")
+	flusher.Flush()
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := fmt.Fprintf(w, ":ping %d\n\n", time.Now().Unix()); err != nil {
+				return
+			}
+			flusher.Flush()
+		case alert, ok := <-client.ch:
+			if !ok {
+				return
+			}
+			data, err := json.Marshal(alert)
+			if err != nil {
+				continue
+			}
+			if _, err := fmt.Fprintf(w, "event: alert\ndata: %s\n\n", data); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}
+
+func (s *Server) handleAlertWS(w http.ResponseWriter, r *http.Request) {
+	filters, err := AlertFiltersFromRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	filters = filters.CloneForStream()
+	if s.isClosed() {
+		http.Error(w, "server shutting down", http.StatusServiceUnavailable)
+		return
+	}
+
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+	if err != nil {
+		log.Printf("websocket accept error: %v", err)
+		return
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	ctx := conn.CloseRead(r.Context())
+
+	client := &alertStreamClient{
+		ch:        make(chan core.AlertEvent, 256),
+		filters:   filters,
+		transport: "ws",
+	}
+	if !s.addAlertClient(client) {
+		_ = conn.Close(websocket.StatusPolicyViolation, "server shutting down")
+		return
+	}
+	defer s.removeAlertClient(client)
+
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			if err := conn.Ping(pingCtx); err != nil {
+				cancel()
+				return
+			}
+			cancel()
+		case alert, ok := <-client.ch:
+			if !ok {
+				_ = conn.Close(websocket.StatusNormalClosure, "server shutting down")
+				return
+			}
+			writeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			if err := wsjson.Write(writeCtx, conn, alert); err != nil {
+				cancel()
+				return
+			}
+			cancel()
+		}
+	}
+}
+
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	if s.metrics == nil {
 		http.NotFound(w, r)
@@ -429,6 +600,25 @@ func (s *Server) removeClient(client *streamClient) {
 	s.mu.Unlock()
 }
 
+func (s *Server) addAlertClient(client *alertStreamClient) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return false
+	}
+	s.alertClients[client] = struct{}{}
+	return true
+}
+
+func (s *Server) removeAlertClient(client *alertStreamClient) {
+	s.mu.Lock()
+	if _, ok := s.alertClients[client]; ok {
+		delete(s.alertClients, client)
+		close(client.ch)
+	}
+	s.mu.Unlock()
+}
+
 func (s *Server) isClosed() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -445,6 +635,24 @@ func (s *Server) Broadcast(msg core.ChatMessage) {
 		}
 		select {
 		case client.ch <- msg:
+		default:
+			if s.metrics != nil {
+				s.metrics.IncBroadcastDrops(client.transport)
+			}
+		}
+	}
+}
+
+func (s *Server) BroadcastAlert(alert core.AlertEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for client := range s.alertClients {
+		if !client.filters.Matches(alert) {
+			continue
+		}
+		select {
+		case client.ch <- alert:
 		default:
 			if s.metrics != nil {
 				s.metrics.IncBroadcastDrops(client.transport)
@@ -475,6 +683,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		close(client.ch)
 	}
 	s.clients = make(map[*streamClient]struct{})
+	for client := range s.alertClients {
+		close(client.ch)
+	}
+	s.alertClients = make(map[*alertStreamClient]struct{})
 	s.mu.Unlock()
 	return s.httpServer.Shutdown(ctx)
 }

@@ -39,6 +39,7 @@ type RuntimeOptions struct {
 }
 
 type Handler func(core.ChatMessage, *ingesttrace.MessageTrace)
+type AlertHandler func(core.AlertEvent)
 
 // BadgeResolver enriches parsed Twitch badges with platform-provided metadata
 // such as official artwork URLs.
@@ -49,15 +50,20 @@ type BadgeResolver interface {
 const badgeEnrichTimeout = 2 * time.Second
 
 type Client struct {
-	cfg    Config
-	handle Handler
-	badges BadgeResolver
+	cfg         Config
+	handle      Handler
+	alertHandle AlertHandler
+	badges      BadgeResolver
 }
 
 var errAuthFailed = errors.New("twitchirc: authentication failed")
 
-func New(cfg Config, h Handler) *Client {
-	return &Client{cfg: cfg, handle: h, badges: cfg.Badges}
+func New(cfg Config, h Handler, alerts ...AlertHandler) *Client {
+	var alertHandler AlertHandler
+	if len(alerts) > 0 {
+		alertHandler = alerts[0]
+	}
+	return &Client{cfg: cfg, handle: h, alertHandle: alertHandler, badges: cfg.Badges}
 }
 
 func (c *Client) Run(ctx context.Context) error {
@@ -290,6 +296,11 @@ func (c *Client) runOnce(ctx context.Context) error {
 
 		msg, trace, ok, reason := parsePrivmsg(ctx, line, c.cfg.Channel, c.badges)
 		if ok {
+			if c.alertHandle != nil {
+				if alert, alertOK := parseAlert(line, c.cfg.Channel); alertOK {
+					c.alertHandle(alert)
+				}
+			}
 			total++
 			window++
 			if c.handle != nil {
@@ -297,11 +308,144 @@ func (c *Client) runOnce(ctx context.Context) error {
 			}
 			continue
 		}
+		if c.alertHandle != nil {
+			if alert, alertOK := parseAlert(line, c.cfg.Channel); alertOK {
+				c.alertHandle(alert)
+			}
+		}
 
 		if reason != "" {
 			twitchMetrics.incDropped(reason)
 			droppedLog.note(now, reason, line)
 		}
+	}
+}
+
+func parseAlert(line, channel string) (core.AlertEvent, bool) {
+	original := line
+	rest := line
+	tags := map[string]string{}
+
+	if strings.HasPrefix(rest, "@") {
+		idx := strings.Index(rest, " ")
+		if idx == -1 {
+			return core.AlertEvent{}, false
+		}
+		tagPart := rest[1:idx]
+		rest = strings.TrimSpace(rest[idx+1:])
+		for _, kv := range strings.Split(tagPart, ";") {
+			if kv == "" {
+				continue
+			}
+			parts := strings.SplitN(kv, "=", 2)
+			key := parts[0]
+			val := ""
+			if len(parts) == 2 {
+				val = unescapeIRC(parts[1])
+			}
+			tags[key] = val
+		}
+	}
+
+	if !strings.HasPrefix(rest, ":") {
+		return core.AlertEvent{}, false
+	}
+	rest = rest[1:]
+	idx := strings.Index(rest, " ")
+	if idx == -1 {
+		return core.AlertEvent{}, false
+	}
+	prefix := rest[:idx]
+	rest = strings.TrimSpace(rest[idx+1:])
+
+	fields := strings.Fields(rest)
+	if len(fields) < 2 {
+		return core.AlertEvent{}, false
+	}
+	command := strings.ToUpper(fields[0])
+	target := strings.TrimPrefix(fields[1], "#")
+	if target != "" && !strings.EqualFold(target, channel) {
+		return core.AlertEvent{}, false
+	}
+
+	event := core.AlertEvent{
+		Platform: "Twitch",
+		Username: extractUser(prefix),
+	}
+	if display := strings.TrimSpace(tags["display-name"]); display != "" {
+		event.Username = display
+	}
+	if tsStr := strings.TrimSpace(tags["tmi-sent-ts"]); tsStr != "" {
+		if ms, err := strconv.ParseInt(tsStr, 10, 64); err == nil {
+			event.TimestampMS = ms
+			event.Ts = time.UnixMilli(ms).UTC()
+		}
+	}
+	if event.Ts.IsZero() {
+		event.Ts = time.Now().UTC()
+		event.TimestampMS = event.Ts.UnixMilli()
+	}
+	if id := strings.TrimSpace(tags["id"]); id != "" {
+		event.PlatformEventID = id
+		event.ID = id
+	} else {
+		event.ID = fmt.Sprintf("tw-alert-%d", event.Ts.UnixNano())
+	}
+	if idx := strings.Index(rest, " :"); idx != -1 {
+		event.Text = strings.TrimSpace(rest[idx+2:])
+	}
+
+	meta := map[string]any{
+		"tags":    tags,
+		"prefix":  prefix,
+		"line":    original,
+		"command": command,
+	}
+	switch command {
+	case "PRIVMSG":
+		if bitsRaw := strings.TrimSpace(tags["bits"]); bitsRaw != "" {
+			bits, err := strconv.Atoi(bitsRaw)
+			if err == nil && bits > 0 {
+				event.Type = "twitch.bits"
+				event.Amount = float64(bits)
+				meta["bits"] = bits
+				if data, err := json.Marshal(meta); err == nil {
+					event.RawJSON = string(data)
+				}
+				return event, true
+			}
+		}
+		return core.AlertEvent{}, false
+	case "USERNOTICE":
+		msgID := strings.ToLower(strings.TrimSpace(tags["msg-id"]))
+		meta["msg_id"] = msgID
+		switch msgID {
+		case "sub", "resub":
+			event.Type = "twitch.subs"
+		case "subgift", "anonsubgift", "submysterygift", "anonsubmysterygift", "giftpaidupgrade", "anongiftpaidupgrade":
+			event.Type = "twitch.gifted_subs"
+			event.Count = 1
+			if c := strings.TrimSpace(tags["msg-param-mass-gift-count"]); c != "" {
+				if parsed, err := strconv.Atoi(c); err == nil && parsed > 0 {
+					event.Count = parsed
+				}
+			}
+		case "raid":
+			event.Type = "twitch.raids"
+			if c := strings.TrimSpace(tags["msg-param-viewerCount"]); c != "" {
+				if parsed, err := strconv.Atoi(c); err == nil && parsed > 0 {
+					event.Count = parsed
+				}
+			}
+		default:
+			return core.AlertEvent{}, false
+		}
+		if data, err := json.Marshal(meta); err == nil {
+			event.RawJSON = string(data)
+		}
+		return event, true
+	default:
+		return core.AlertEvent{}, false
 	}
 }
 

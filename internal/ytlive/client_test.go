@@ -540,3 +540,67 @@ func TestBuildMessageEmotes(t *testing.T) {
 		t.Fatalf("expected https normalization, got %q", emote.Images[1].URL)
 	}
 }
+
+func TestExtractAlerts(t *testing.T) {
+	payload := map[string]any{
+		"actions": []any{
+			map[string]any{
+				"addChatItemAction": map[string]any{
+					"item": map[string]any{
+						"liveChatPaidMessageRenderer": map[string]any{
+							"id":                 "paid-1",
+							"timestampUsec":      "1700000000000000",
+							"authorName":         map[string]any{"simpleText": "Alice"},
+							"purchaseAmountText": map[string]any{"simpleText": "$5.00"},
+							"message":            map[string]any{"simpleText": "great stream"},
+						},
+					},
+				},
+			},
+			map[string]any{
+				"showLiveChatActionPanelAction": map[string]any{
+					"panelToShow": map[string]any{
+						"liveChatMembershipItemRenderer": map[string]any{
+							"id":            "member-1",
+							"timestampUsec": "1700000001000000",
+							"authorName":    map[string]any{"simpleText": "Bob"},
+							"message":       map[string]any{"simpleText": "Member for 1 month"},
+						},
+					},
+				},
+			},
+			map[string]any{
+				"addLiveChatTickerItemAction": map[string]any{
+					"item": map[string]any{
+						"liveChatSponsorshipsGiftPurchaseAnnouncementRenderer": map[string]any{
+							"id":                   "gift-1",
+							"timestampUsec":        "1700000002000000",
+							"authorName":           map[string]any{"simpleText": "Carol"},
+							"giftMembershipsCount": 3,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	alerts := extractAlerts(payload)
+	if len(alerts) != 3 {
+		t.Fatalf("expected 3 alerts, got %d", len(alerts))
+	}
+	if alerts[0].Type != "youtube.super_chats" {
+		t.Fatalf("unexpected first type %q", alerts[0].Type)
+	}
+	if alerts[0].Amount != 5 {
+		t.Fatalf("expected first amount 5, got %v", alerts[0].Amount)
+	}
+	if alerts[1].Type != "youtube.members" {
+		t.Fatalf("unexpected second type %q", alerts[1].Type)
+	}
+	if alerts[2].Type != "youtube.gifted_members" {
+		t.Fatalf("unexpected third type %q", alerts[2].Type)
+	}
+	if alerts[2].Count != 3 {
+		t.Fatalf("expected gift count 3, got %d", alerts[2].Count)
+	}
+}

@@ -191,3 +191,20 @@ func (b *BufferedWriter) writeAll(msgs []tracedMessage) error {
 	}
 	return nil
 }
+
+// WriteAlert forwards alert writes directly to the wrapped writer.
+// Alerts are low-volume and should be visible immediately to stream consumers.
+func (b *BufferedWriter) WriteAlert(alert core.AlertEvent) error {
+	b.mu.Lock()
+	closed := b.closed
+	base := b.base
+	b.mu.Unlock()
+	if closed {
+		return errors.New("buffered writer closed")
+	}
+	aw, ok := base.(AlertWriter)
+	if !ok {
+		return errors.New("base writer does not support alerts")
+	}
+	return aw.WriteAlert(alert)
+}

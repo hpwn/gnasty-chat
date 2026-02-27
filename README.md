@@ -240,6 +240,8 @@ fallback images.
 | --- | --- |
 | `GET /messages` | Returns recent messages (defaults to 100, newest first). |
 | `GET /count` | Returns `{"count": N}` for the current filters. |
+| `GET /alerts` | Returns recent alert events (defaults to 100, newest first). |
+| `GET /alerts/count` | Returns `{"count": N}` for alert filters. |
 | `GET /info` | Build metadata (`version`, `rev`, `built_at`, `go`). |
 | `GET /metrics` | Prometheus metrics (if enabled). |
 | `GET /healthz` | JSON liveness probe with sink reachability. |
@@ -337,6 +339,8 @@ curl -s 'http://localhost:8765/messages?order=asc&limit=1' | jq '.[0].Ts'
 | --- | --- |
 | `GET /stream` | Server-Sent Events (heartbeat every ~25s, drops slow clients). |
 | `GET /ws` | WebSocket (JSON frames, ping every 30s). |
+| `GET /alerts/stream` | Server-Sent Events for alert events (`event: alert`). |
+| `GET /alerts/ws` | WebSocket stream for alert event JSON frames. |
 
 Both transports accept the same query filters as `/messages` (documented below), so
 you can connect to a subset of the live firehose:
@@ -347,6 +351,9 @@ npx wscat -c 'ws://localhost:8765/ws?platform=twitch&username=foo'
 
 # SSE stream for only YouTube chat
 curl -N 'http://localhost:8765/stream?platform=youtube'
+
+# SSE stream for Twitch alert events
+curl -N 'http://localhost:8765/alerts/stream?platform=twitch&type=twitch.bits'
 ```
 
 ### Query filters
@@ -354,12 +361,14 @@ curl -N 'http://localhost:8765/stream?platform=youtube'
 | Parameter | Description |
 | --- | --- |
 | `platform` | Accepts `twitch`, `tw`, `youtube`, `yt`, or `all` (comma-separated or repeated). Maps to canonical `Twitch`/`YouTube`. |
+| `type` | Alert-only filter. Case-insensitive exact match (comma-separated or repeated), e.g. `twitch.subs`, `twitch.gifted_subs`, `twitch.bits`, `twitch.raids`, `youtube.members`, `youtube.super_chats`, `youtube.gifted_members`. |
 | `username` | Case-insensitive substring match; may appear multiple times or comma-separated. |
 | `since` | RFC3339 timestamp, RFC3339Nano, UNIX seconds, or duration (e.g. `5m`, `2h`). |
 | `limit` | Max rows (default `100`, cap `1000`). |
 | `order` | `desc` (default) or `asc` for chronological order. |
 
-The same filters apply to `/messages`, `/count`, `/stream`, and `/ws`.
+Message filters apply to `/messages`, `/count`, `/stream`, and `/ws`.
+Alert filters apply to `/alerts`, `/alerts/count`, `/alerts/stream`, and `/alerts/ws`.
 
 ## Operations & observability
 

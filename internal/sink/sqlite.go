@@ -32,6 +32,21 @@ const schema = `CREATE TABLE IF NOT EXISTS messages (
   colour TEXT NOT NULL DEFAULT ''
 );`
 
+const alertSchema = `CREATE TABLE IF NOT EXISTS alerts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  platform TEXT NOT NULL,
+  type TEXT NOT NULL,
+  platform_event_id TEXT,
+  ts INTEGER NOT NULL,
+  username TEXT NOT NULL DEFAULT '',
+  text TEXT NOT NULL DEFAULT '',
+  amount REAL NOT NULL DEFAULT 0,
+  currency TEXT NOT NULL DEFAULT '',
+  count INTEGER NOT NULL DEFAULT 0,
+  raw_json TEXT NOT NULL DEFAULT '',
+  meta_json TEXT NOT NULL DEFAULT '{}'
+);`
+
 type SQLiteSink struct {
 	db *sql.DB
 }
@@ -53,6 +68,10 @@ func OpenSQLite(path string) (*SQLiteSink, error) {
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
 		return nil, errors.Wrapf(err, "apply schema (%s)", path)
+	}
+	if _, err := db.Exec(alertSchema); err != nil {
+		_ = db.Close()
+		return nil, errors.Wrapf(err, "apply alert schema (%s)", path)
 	}
 	if err := migrateLegacyMessagesTable(context.Background(), db); err != nil {
 		_ = db.Close()
@@ -79,6 +98,15 @@ func ensureIndices(ctx context.Context, db *sql.DB) error {
            ON messages(platform, platform_msg_id);`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS messages_upsert_key
            ON messages(platform, ts, username, text);`,
+		`CREATE INDEX IF NOT EXISTS alerts_platform_ts
+           ON alerts(platform, ts DESC);`,
+		`CREATE INDEX IF NOT EXISTS alerts_type_ts
+           ON alerts(type, ts DESC);`,
+		`DROP INDEX IF EXISTS alerts_uq_platform_event;`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS alerts_uq_platform_event
+           ON alerts(platform, platform_event_id);`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS alerts_upsert_key
+           ON alerts(platform, ts, type, username, text);`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
@@ -547,6 +575,135 @@ func (s *SQLiteSink) ListMessages(ctx context.Context, filters httpapi.Filters) 
 	return out, nil
 }
 
+func (s *SQLiteSink) WriteAlert(alert core.AlertEvent) error {
+	tsMS := alert.TimestampMS
+	if tsMS == 0 {
+		if !alert.Ts.IsZero() {
+			tsMS = alert.Ts.UTC().UnixMilli()
+		} else {
+			tsMS = time.Now().UTC().UnixMilli()
+		}
+	}
+	platform := strings.TrimSpace(alert.Platform)
+	alertType := strings.TrimSpace(alert.Type)
+	platformEventID := strings.TrimSpace(alert.PlatformEventID)
+	username := strings.TrimSpace(alert.Username)
+	text := alert.Text
+	rawJSON := jsonText(alert.RawJSON, nil, "")
+	metaJSON := jsonText(alert.MetaJSON, nil, "{}")
+	if metaJSON == "" {
+		metaJSON = "{}"
+	}
+
+	conflict := `ON CONFLICT(platform, ts, type, username, text) DO NOTHING`
+	var platformEventArg any
+	if platformEventID != "" {
+		conflict = `ON CONFLICT(platform, platform_event_id) DO UPDATE SET
+            ts=excluded.ts,
+            username=excluded.username,
+            type=excluded.type,
+            text=excluded.text,
+            amount=excluded.amount,
+            currency=excluded.currency,
+            count=excluded.count,
+            raw_json=excluded.raw_json,
+            meta_json=excluded.meta_json`
+		platformEventArg = platformEventID
+	}
+
+	query := fmt.Sprintf(`INSERT INTO alerts (
+platform, type, platform_event_id, ts, username, text, amount, currency, count, raw_json, meta_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) %s;`, conflict)
+
+	return errors.Wrap(withRetry(func() error {
+		_, err := s.db.Exec(query,
+			platform,
+			alertType,
+			platformEventArg,
+			tsMS,
+			username,
+			text,
+			alert.Amount,
+			strings.TrimSpace(alert.Currency),
+			alert.Count,
+			rawJSON,
+			metaJSON,
+		)
+		return err
+	}), "insert alert")
+}
+
+func (s *SQLiteSink) CountAlerts(ctx context.Context, filters httpapi.AlertFilters) (int64, error) {
+	query, args := buildAlertQuery(filters, true)
+	var n int64
+	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&n); err != nil {
+		return 0, errors.Wrap(err, "count alerts")
+	}
+	return n, nil
+}
+
+func (s *SQLiteSink) ListAlerts(ctx context.Context, filters httpapi.AlertFilters) ([]core.AlertEvent, error) {
+	query, args := buildAlertQuery(filters, false)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, errors.Wrap(err, "list alerts")
+	}
+	defer rows.Close()
+
+	out := make([]core.AlertEvent, 0)
+	for rows.Next() {
+		var (
+			rowID           int64
+			platformEventID sql.NullString
+			tsMS            int64
+			alert           core.AlertEvent
+			username        string
+			text            string
+			currency        string
+			rawJSON         string
+			metaJSON        string
+		)
+		if err := rows.Scan(
+			&rowID,
+			&alert.Platform,
+			&alert.Type,
+			&platformEventID,
+			&tsMS,
+			&username,
+			&text,
+			&alert.Amount,
+			&currency,
+			&alert.Count,
+			&rawJSON,
+			&metaJSON,
+		); err != nil {
+			return nil, errors.Wrap(err, "scan alert")
+		}
+		alert.TimestampMS = tsMS
+		if tsMS > 0 {
+			alert.Ts = time.UnixMilli(tsMS).UTC()
+		}
+		if platformEventID.Valid {
+			alert.PlatformEventID = platformEventID.String
+		}
+		if alert.PlatformEventID != "" {
+			alert.ID = alert.PlatformEventID
+		} else {
+			alert.ID = fmt.Sprintf("%d", rowID)
+		}
+		alert.Username = username
+		alert.Text = text
+		alert.Currency = currency
+		alert.RawJSON = rawJSON
+		alert.MetaJSON = metaJSON
+		out = append(out, alert)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errors.Wrap(err, "iterate alerts")
+	}
+	return out, nil
+}
+
 func buildMessageQuery(filters httpapi.Filters, count bool) (string, []any) {
 	var builder strings.Builder
 	if count {
@@ -603,6 +760,71 @@ func buildMessageQuery(filters httpapi.Filters, count bool) (string, []any) {
 		args = append(args, limit)
 	}
 
+	builder.WriteString(";")
+	return builder.String(), args
+}
+
+func buildAlertQuery(filters httpapi.AlertFilters, count bool) (string, []any) {
+	var builder strings.Builder
+	if count {
+		builder.WriteString("SELECT COUNT(*) FROM alerts")
+	} else {
+		builder.WriteString("SELECT id, platform, type, platform_event_id, ts, username, text, amount, currency, count, raw_json, meta_json FROM alerts")
+	}
+
+	var (
+		conditions []string
+		args       []any
+	)
+
+	if len(filters.Platforms) > 0 {
+		placeholders := make([]string, 0, len(filters.Platforms))
+		for _, p := range filters.Platforms {
+			placeholders = append(placeholders, "?")
+			args = append(args, p)
+		}
+		conditions = append(conditions, fmt.Sprintf("platform IN (%s)", strings.Join(placeholders, ",")))
+	}
+	if len(filters.Types) > 0 {
+		placeholders := make([]string, 0, len(filters.Types))
+		for _, t := range filters.Types {
+			placeholders = append(placeholders, "?")
+			args = append(args, t)
+		}
+		conditions = append(conditions, fmt.Sprintf("LOWER(type) IN (%s)", strings.Join(placeholders, ",")))
+	}
+	if len(filters.Usernames) > 0 {
+		ors := make([]string, 0, len(filters.Usernames))
+		for _, u := range filters.Usernames {
+			ors = append(ors, "LOWER(username) LIKE '%' || ? || '%'")
+			args = append(args, u)
+		}
+		conditions = append(conditions, fmt.Sprintf("(%s)", strings.Join(ors, " OR ")))
+	}
+	if filters.Since != nil {
+		conditions = append(conditions, "ts >= ?")
+		args = append(args, filters.Since.UTC().UnixMilli())
+	}
+
+	if len(conditions) > 0 {
+		builder.WriteString(" WHERE ")
+		builder.WriteString(strings.Join(conditions, " AND "))
+	}
+
+	if !count {
+		order := "DESC"
+		if filters.Order == httpapi.OrderAsc {
+			order = "ASC"
+		}
+		builder.WriteString(" ORDER BY ts ")
+		builder.WriteString(order)
+		limit := filters.Limit
+		if limit <= 0 {
+			limit = defaultListLimit
+		}
+		builder.WriteString(" LIMIT ?")
+		args = append(args, limit)
+	}
 	builder.WriteString(";")
 	return builder.String(), args
 }

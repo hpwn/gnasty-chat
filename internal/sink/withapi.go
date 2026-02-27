@@ -7,6 +7,7 @@ import (
 
 type broadcaster interface {
 	Broadcast(core.ChatMessage)
+	BroadcastAlert(core.AlertEvent)
 }
 
 type WithBroadcast struct {
@@ -24,6 +25,16 @@ func (w *WithBroadcast) Write(msg core.ChatMessage, trace *ingesttrace.MessageTr
 	}
 	if w.api != nil {
 		w.api.Broadcast(msg)
+	}
+	return nil
+}
+
+func (w *WithBroadcast) WriteAlert(alert core.AlertEvent) error {
+	if err := w.SQLiteSink.WriteAlert(alert); err != nil {
+		return err
+	}
+	if w.api != nil {
+		w.api.BroadcastAlert(alert)
 	}
 	return nil
 }
