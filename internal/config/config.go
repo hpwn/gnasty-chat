@@ -13,6 +13,7 @@ type Config struct {
 	Sinks   []string
 	Sink    SinkConfig
 	Twitch  TwitchConfig
+	Kick    KickConfig
 	YouTube YouTubeConfig
 }
 
@@ -57,6 +58,17 @@ type YouTubeConfig struct {
 	Debug           bool `json:"debug"`
 }
 
+type KickConfig struct {
+	Enabled bool
+	Channels []string
+	Nick string
+	Token string
+	TokenFile string
+	TLS bool
+	BackoffMinMS int
+	BackoffMaxMS int
+}
+
 const (
 	defaultSQLitePath          = "chat.db"
 	defaultBatchSize           = 1
@@ -66,6 +78,8 @@ const (
 	defaultYouTubePollInterval = 10_000
 	defaultTwitchBackoffMinMS  = 1000
 	defaultTwitchBackoffMaxMS  = 60_000
+	defaultKickBackoffMinMS    = 1000
+	defaultKickBackoffMaxMS    = 60_000
 )
 
 func Load() Config {
@@ -153,7 +167,18 @@ func Load() Config {
 		cfg.Twitch.RefreshBackoffMinMS = defaultTwitchBackoffMinMS
 		cfg.Twitch.RefreshBackoffMaxMS = defaultTwitchBackoffMaxMS
 	}
-
+	cfg.Kick.Enabled = readBool("GNASTY_KICK_ENABLED", false)
+	cfg.Kick.Channels = dedupe(splitList(os.Getenv("GNASTY_KICK_CHANNELS")))
+	cfg.Kick.Nick = strings.TrimSpace(os.Getenv("GNASTY_KICK_NICK"))
+	cfg.Kick.Token = strings.TrimSpace(os.Getenv("GNASTY_KICK_TOKEN"))
+	cfg.Kick.TokenFile = strings.TrimSpace(os.Getenv("GNASTY_KICK_TOKEN_FILE"))
+	cfg.Kick.TLS = readBoolDefaultTrue("GNASTY_KICK_TLS", true)
+	cfg.Kick.BackoffMinMS = readIntMin("GNASTY_KICK_BACKOFF_MIN_MS", defaultKickBackoffMinMS, 1)
+	cfg.Kick.BackoffMaxMS = readIntMin("GNASTY_KICK_BACKOFF_MAX_MS", defaultKickBackoffMaxMS, 1)
+	if cfg.Kick.BackoffMinMS > cfg.Kick.BackoffMaxMS {
+		cfg.Kick.BackoffMinMS = defaultKickBackoffMinMS
+		cfg.Kick.BackoffMaxMS = defaultKickBackoffMaxMS
+	}
 	ytURL := strings.TrimSpace(os.Getenv("GNASTY_YT_URL"))
 	if ytURL == "" {
 		ytURL = strings.TrimSpace(os.Getenv("YOUTUBE_URL"))
@@ -196,6 +221,9 @@ func Load() Config {
 
 	if !cfg.Twitch.Enabled {
 		cfg.Twitch.Enabled = len(cfg.Twitch.Channels) > 0
+	}
+	if !cfg.Kick.Enabled {
+		cfg.Kick.Enabled = len(cfg.Kick.Channels) > 0
 	}
 
 	return cfg
@@ -331,6 +359,7 @@ func envExists(name string) bool {
 
 func (c Config) Summary() Summary {
 	twitchChannels := len(c.Twitch.Channels)
+	kickChannels := len(c.Kick.Channels)
 	ytChannels := 0
 	if c.YouTube.LiveURL != "" {
 		ytChannels = 1
@@ -360,6 +389,16 @@ func (c Config) Summary() Summary {
 			RefreshBackoffMaxMS: c.Twitch.RefreshBackoffMaxMS,
 			RefreshEnabled:      refreshEnabled,
 		},
+		Kick: KickSummary{
+			Enabled: c.Kick.Enabled,
+			Channels: kickChannels,
+			Nick: c.Kick.Nick,
+			Token: redactString(c.Kick.Token),
+			TokenFile: c.Kick.TokenFile,
+			TLS: c.Kick.TLS,
+			BackoffMinMS: c.Kick.BackoffMinMS,
+			BackoffMaxMS: c.Kick.BackoffMaxMS,
+		},
 		YouTube: YouTubeSummary{
 			Enabled:         c.YouTube.Enabled,
 			Channels:        ytChannels,
@@ -380,6 +419,7 @@ type Summary struct {
 	BatchSize  int            `json:"batch"`
 	FlushMaxMS int            `json:"flush_ms"`
 	Twitch     TwitchSummary  `json:"twitch"`
+	Kick       KickSummary    `json:"kick"`
 	YouTube    YouTubeSummary `json:"yt"`
 }
 
@@ -413,6 +453,17 @@ type YouTubeSummary struct {
 	Debug           bool   `json:"debug"`
 }
 
+type KickSummary struct {
+	Enabled bool `json:"enabled"`
+	Channels int `json:"channels"`
+	Nick string `json:"nick,omitempty"`
+	Token string `json:"token,omitempty"`
+	TokenFile string `json:"token_file,omitempty"`
+	TLS bool `json:"tls"`
+	BackoffMinMS int `json:"backoff_min_ms"`
+	BackoffMaxMS int `json:"backoff_max_ms"`
+}
+
 func (c Config) Redacted() map[string]any {
 	refreshEnabled := c.Twitch.ClientID != "" && c.Twitch.ClientSecret != "" && (c.Twitch.RefreshToken != "" || c.Twitch.RefreshTokenFile != "")
 
@@ -440,6 +491,16 @@ func (c Config) Redacted() map[string]any {
 			"refresh_backoff_min_ms": c.Twitch.RefreshBackoffMinMS,
 			"refresh_backoff_max_ms": c.Twitch.RefreshBackoffMaxMS,
 			"refresh_enabled":        refreshEnabled,
+		},
+		"kick": map[string]any{
+			"enabled": c.Kick.Enabled,
+			"channels": append([]string(nil), c.Kick.Channels...),
+			"nick": c.Kick.Nick,
+			"token": redactString(c.Kick.Token),
+			"token_file": c.Kick.TokenFile,
+			"tls": c.Kick.TLS,
+			"backoff_min_ms": c.Kick.BackoffMinMS,
+			"backoff_max_ms": c.Kick.BackoffMaxMS,
 		},
 		"youtube": map[string]any{
 			"enabled": c.YouTube.Enabled,

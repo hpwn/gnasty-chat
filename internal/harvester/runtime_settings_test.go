@@ -3,6 +3,7 @@ package harvester
 import (
 	"testing"
 
+	"github.com/you/gnasty-chat/internal/config"
 	"github.com/you/gnasty-chat/internal/twitchauth"
 )
 
@@ -17,6 +18,12 @@ func TestRuntimeSettingsApplyValidation(t *testing.T) {
 			BackoffMaxMS:        2000,
 			RefreshBackoffMinMS: 1000,
 			RefreshBackoffMaxMS: 2000,
+		},
+		Kick: KickRuntimeSettings{
+			Enabled: true,
+			Channels: []string{"alpha"},
+			BackoffMinMS: 1000,
+			BackoffMaxMS: 2000,
 		},
 		YouTube: YouTubeRuntimeSettings{RetrySeconds: 30},
 	}
@@ -41,6 +48,7 @@ func TestRuntimeSettingsApplyNoopChangedFalse(t *testing.T) {
 			RefreshBackoffMinMS: 1000,
 			RefreshBackoffMaxMS: 60_000,
 		},
+		Kick: KickRuntimeSettings{Enabled: false, BackoffMinMS: 1000, BackoffMaxMS: 60_000},
 		YouTube: YouTubeRuntimeSettings{URL: "https://www.youtube.com/@elora/live", RetrySeconds: 30},
 	}
 
@@ -55,6 +63,9 @@ func TestRuntimeSettingsApplyNoopChangedFalse(t *testing.T) {
 	}
 	if next.Sinks.BatchSize != current.Sinks.BatchSize || next.YouTube.URL != current.YouTube.URL || next.Twitch.Channel != current.Twitch.Channel {
 		t.Fatalf("expected no settings changes")
+	}
+	if next.Kick.Enabled != current.Kick.Enabled {
+		t.Fatalf("expected no kick settings changes")
 	}
 }
 
@@ -80,6 +91,37 @@ func TestHarvesterApplyRuntimeConfigInvokesApplier(t *testing.T) {
 	}
 	if seen.BatchSize != 5 {
 		t.Fatalf("sink applier saw batch_size=%d, want 5", seen.BatchSize)
+	}
+}
+func TestNewRuntimeSettingsFromConfigKickDefaults(t *testing.T) {
+	settings := NewRuntimeSettingsFromConfig(config.Config{})
+	if settings.Kick.Enabled {
+		t.Fatalf("expected kick disabled by default")
+	}
+	if settings.Kick.BackoffMinMS != 1000 || settings.Kick.BackoffMaxMS != 60_000 {
+		t.Fatalf("unexpected default kick backoff: min=%d max=%d", settings.Kick.BackoffMinMS, settings.Kick.BackoffMaxMS)
+	}
+}
+
+func TestNewRuntimeSettingsFromConfigKickExplicit(t *testing.T) {
+	settings := NewRuntimeSettingsFromConfig(config.Config{
+		Kick: config.KickConfig{
+			Enabled: true,
+			Channels: []string{"Alpha", "beta"},
+			Nick: "kickbot",
+			TLS: false,
+			BackoffMinMS: 1500,
+			BackoffMaxMS: 45000,
+		},
+	})
+	if !settings.Kick.Enabled || len(settings.Kick.Channels) != 2 {
+		t.Fatalf("unexpected Kick runtime settings: %+v", settings.Kick)
+	}
+	if settings.Kick.Nick != "kickbot" || settings.Kick.TLS {
+		t.Fatalf("unexpected Kick runtime identity/tls: %+v", settings.Kick)
+	}
+	if settings.Kick.BackoffMinMS != 1500 || settings.Kick.BackoffMaxMS != 45000 {
+		t.Fatalf("unexpected Kick runtime backoff: %+v", settings.Kick)
 	}
 }
 

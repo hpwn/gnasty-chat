@@ -124,7 +124,7 @@ func (h *Harvester) ApplyRuntimeConfig(patch RuntimeConfigPatch) (RuntimeApplyRe
 		}
 		result.YouTube = applied
 	}
-	result.Changed = result.Sinks || result.Twitch || result.YouTube
+	result.Changed = result.Sinks || result.Twitch || result.Kick || result.YouTube
 
 	h.runtimeMu.Lock()
 	h.runtime = next

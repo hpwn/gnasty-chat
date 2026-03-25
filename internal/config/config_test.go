@@ -21,7 +21,15 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("GNASTY_TWITCH_BACKOFF_MAX_MS", "")
 	t.Setenv("GNASTY_TWITCH_REFRESH_BACKOFF_MIN_MS", "")
 	t.Setenv("GNASTY_TWITCH_REFRESH_BACKOFF_MAX_MS", "")
-
+	t.Setenv("GNASTY_KICK_ENABLED", "")
+	t.Setenv("GNASTY_KICK_CHANNELS", "")
+	t.Setenv("GNASTY_KICK_NICK", "")
+	t.Setenv("GNASTY_KICK_TOKEN", "")
+	t.Setenv("GNASTY_KICK_TOKEN_FILE", "")
+	t.Setenv("GNASTY_KICK_TLS", "")
+	t.Setenv("GNASTY_KICK_BACKOFF_MIN_MS", "")
+	t.Setenv("GNASTY_KICK_BACKOFF_MAX_MS", "")
+	
 	cfg := Load()
 	if !cfg.HasSink("sqlite") {
 		t.Fatalf("expected sqlite sink by default, got %v", cfg.Sinks)
@@ -56,6 +64,15 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Twitch.BackoffMinMS != 1000 || cfg.Twitch.BackoffMaxMS != 60000 {
 		t.Fatalf("unexpected twitch backoff defaults: min=%d max=%d", cfg.Twitch.BackoffMinMS, cfg.Twitch.BackoffMaxMS)
 	}
+	if cfg.Kick.Enabled {
+		t.Fatalf("expected kick disabled by default")
+	}
+	if cfg.Kick.TLS != true {
+		t.Fatalf("expected kick TLS default true")
+	}
+	if cfg.Kick.BackoffMinMS != 1000 || cfg.Kick.BackoffMaxMS != 60000 {
+		t.Fatalf("unexpected kick backoff defaults: min=%d max=%d", cfg.Kick.BackoffMinMS, cfg.Kick.BackoffMaxMS)
+	}
 }
 
 func TestLoadEnvOverrides(t *testing.T) {
@@ -79,7 +96,14 @@ func TestLoadEnvOverrides(t *testing.T) {
 	t.Setenv("GNASTY_YT_POLL_TIMEOUT_SECS", "60")
 	t.Setenv("GNASTY_YT_POLL_INTERVAL_MS", "1500")
 	t.Setenv("GNASTY_YT_DEBUG", "yes")
-
+	t.Setenv("GNASTY_KICK_CHANNELS", "alpha, beta")
+	t.Setenv("GNASTY_KICK_NICK", "kick_bot")
+	t.Setenv("GNASTY_KICK_TOKEN", "secretkick")
+	t.Setenv("GNASTY_KICK_TOKEN_FILE", "/var/secrets/kick.token")
+	t.Setenv("GNASTY_KICK_TLS", "false")
+	t.Setenv("GNASTY_KICK_BACKOFF_MIN_MS", "1200")
+	t.Setenv("GNASTY_KICK_BACKOFF_MAX_MS", "42000")
+	
 	cfg := Load()
 	if cfg.Sink.SQLite.Path != "/data/elora.db" {
 		t.Fatalf("unexpected sqlite path: %q", cfg.Sink.SQLite.Path)
@@ -135,6 +159,21 @@ func TestLoadEnvOverrides(t *testing.T) {
 	if !cfg.YouTube.Debug {
 		t.Fatalf("expected youtube debug override")
 	}
+	if !cfg.Kick.Enabled {
+		t.Fatalf("expected kick enabled by channels")
+	}
+	if len(cfg.Kick.Channels) != 2 {
+		t.Fatalf("expected two kick channels, got %v", cfg.Kick.Channels)
+	}
+	if cfg.Kick.Nick != "kick_bot" || cfg.Kick.Token != "secretkick" || cfg.Kick.TokenFile != "/var/secrets/kick.token" {
+		t.Fatalf("unexpected kick auth settings: %+v", cfg.Kick)
+	}
+	if cfg.Kick.TLS {
+		t.Fatalf("expected kick tls false override")
+	}
+	if cfg.Kick.BackoffMinMS != 1200 || cfg.Kick.BackoffMaxMS != 42000 {
+		t.Fatalf("unexpected kick backoff override: min=%d max=%d", cfg.Kick.BackoffMinMS, cfg.Kick.BackoffMaxMS)
+	}
 }
 
 func TestRedactedSnapshot(t *testing.T) {
@@ -155,12 +194,25 @@ func TestRedactedSnapshot(t *testing.T) {
 			RefreshToken:     "refresh",
 			RefreshTokenFile: "/secrets/refresh",
 		},
+		Kick: KickConfig{
+			Enabled: true,
+			Channels: []string{"kickch"},
+			Nick: "kick_bot",
+			Token: "kicksecret",
+			TokenFile: "/secrets/kick.token",
+			TLS: true,
+			BackoffMinMS: 900,
+			BackoffMaxMS: 5000,
+		},
 		YouTube: YouTubeConfig{Enabled: true, LiveURL: "https://youtube.test/watch", RetrySeconds: 45, DumpUnhandled: true, PollTimeoutSecs: 30, PollIntervalMS: 7500, Debug: true},
 	}
 
 	summary := cfg.Summary()
 	if summary.Twitch.Token != "***REDACTED*** (len=12)" {
 		t.Fatalf("expected redacted token, got %q", summary.Twitch.Token)
+	}
+	if summary.Kick.Token != "***REDACTED*** (len=10)" {
+		t.Fatalf("expected redacted kick token, got %q", summary.Kick.Token)
 	}
 	if !summary.Twitch.RefreshEnabled {
 		t.Fatalf("expected refresh enabled to be true")
@@ -181,6 +233,13 @@ func TestRedactedSnapshot(t *testing.T) {
 	}
 	if redacted["sink"].(map[string]any)["sqlite_path"].(string) != "/data/elora.db" {
 		t.Fatalf("expected sqlite path preserved in redacted snapshot")
+	}
+	kickRaw := redacted["kick"].(map[string]any)
+	if kickRaw["token"].(string) != "***REDACTED*** (len=10)" {
+		t.Fatalf("expected redacted kick token: %v", kickRaw["token"])
+	}
+	if kickRaw["backoff_min_ms"].(int) != 900 || kickRaw["backoff_max_ms"].(int) != 5000 {
+		t.Fatalf("unexpected kick backoff values in redacted snapshot, got min=%v max=%v", kickRaw["backoff_min_ms"], kickRaw["backoff_max_ms"])
 	}
 	youtubeRaw := redacted["youtube"].(map[string]any)
 	if youtubeRaw["retry_seconds"].(int) != 45 {
